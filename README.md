@@ -85,6 +85,34 @@ seestar-tool --tui
 
 ---
 
+### About Firmware Files
+
+**Why APK?**
+
+Seestar runs firmware based on Android, so ZWO distributes firmware as APK (Android Package) files. An APK is a ZIP archive containing the firmware's binary executable, resources, and metadata. This tool extracts the actual firmware binary (`iscope`) from the APK and uploads it to your scope.
+
+**APK vs. XAPK**
+
+- **APK** — a single archive file containing all firmware components
+- **XAPK** — a split APK format used for large packages; it's a ZIP containing multiple APK files plus metadata
+
+Both formats can be used with this tool—it handles the extraction automatically.
+
+**What is `iscope`?**
+
+`iscope` comes in two variants:
+
+- **`iscope`** — 32-bit firmware binary (used on earlier Seestar models)
+- **`iscope_64`** — 64-bit firmware binary (used on Seestar S30 and S30 Pro)
+
+Both are bzip2-compressed tarballs containing the firmware binary and related system files, stored in the APK's `assets/iscope` or `assets/iscope_64` entry. This tool automatically detects and extracts the correct variant from your APK. You can:
+
+- Extract and use a raw `iscope` or `iscope_64` file directly
+- Let this tool extract the appropriate variant from an APK/XAPK before uploading
+- Extract it as a reference or for use with other tools (e.g., [seestar-proxy](https://github.com/astrophotograph/seestar-proxy))
+
+---
+
 ### Firmware Update
 
 1. Choose a firmware source:
@@ -111,6 +139,38 @@ PEM key extraction is provided for **interoperability purposes** under 17 U.S.C.
 **The legality of key extraction and use varies by jurisdiction.** The DMCA interoperability exemption applies within the United States. Laws governing reverse engineering, circumvention, and interoperability differ significantly across countries and regions. **You are solely responsible for ensuring that your use of this feature complies with the laws of your region.**
 
 The author(s) of this software make no representations regarding the legality of this feature outside the United States, and expressly disclaim any liability arising from use of the Extract PEM feature in jurisdictions where such activity may not be permitted.
+
+---
+
+## Versions
+
+Known firmware version number mappings (courtesy of bguthro/seestar-tool#1):
+
+| App version | asiair version_int | version_string |
+|---|---|---|
+| 3.1.2 | 2732 | 7.32 |
+| 3.1.1 | 2718 | 7.18 |
+| 3.1.0 | 2706 | 7.06 |
+| 3.0.2 | 2670 | 6.70 |
+| 3.0.1 | 2658 | 6.58 |
+| 3.0.0 | 2645 | 6.45 |
+| 2.7.0 | 2597 | 5.97 |
+| 2.6.4 | 2582 | 5.82 |
+| 2.6.1 | 2550 | 5.50 |
+| 2.6.0 | 2534 | 5.34 |
+| 2.5.0 | 2470 | 4.70 |
+| 2.4.1 | 2443 | 4.43 |
+| 2.4.0 | 2427 | 4.27 |
+| 2.3.1 | 2402 | 4.02 |
+| 2.3.0 | 2400 | 4.00 |
+| 2.2.1 | 2368 | 3.68 |
+| 2.2.0 | 2358 | 3.58 |
+| 2.1.0 | 2331 | 3.31 |
+| 2.0.0 | 2295 | 2.95 |
+| 1.20.2 | 2276 | 2.76 |
+| 1.20.0 | 2271 | 2.71 |
+| 1.19.0 | 2261 | 2.61 |
+| 1.18.0 | 2253 | 2.53 |
 
 ---
 
