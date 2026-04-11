@@ -44,6 +44,7 @@ enum FirmwareSource {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Focus {
+    MainTabs,
     SourceTabs,
     FilePath,
     Host,
@@ -519,6 +520,11 @@ impl App {
             return;
         }
 
+        if self.focus == Focus::MainTabs {
+            self.handle_key_main_tabs(code);
+            return;
+        }
+
         match self.tab {
             Tab::Firmware => self.handle_key_firmware(code, modifiers),
             Tab::ExtractPem => self.handle_key_pem(code, modifiers),
@@ -553,6 +559,30 @@ impl App {
                     }
                     // directory was entered; browser stays open
                 }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_main_tabs(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Left => {
+                self.tab = Tab::Firmware;
+            }
+            KeyCode::Right => {
+                self.tab = Tab::ExtractPem;
+            }
+            KeyCode::Tab => {
+                self.focus = match self.tab {
+                    Tab::Firmware => Focus::SourceTabs,
+                    Tab::ExtractPem => Focus::PemFilePath,
+                };
+            }
+            KeyCode::BackTab => {
+                self.focus = match self.tab {
+                    Tab::Firmware => Focus::Logs,
+                    Tab::ExtractPem => Focus::Logs,
+                };
             }
             _ => {}
         }
@@ -656,7 +686,7 @@ impl App {
                 _ => {}
             },
             Focus::Logs => match code {
-                KeyCode::Tab => self.focus = Focus::SourceTabs,
+                KeyCode::Tab => self.focus = Focus::MainTabs,
                 KeyCode::BackTab => self.focus = Focus::ActionButton,
                 _ => {}
             },
@@ -706,7 +736,7 @@ impl App {
                 _ => {}
             },
             Focus::Logs => match code {
-                KeyCode::Tab => self.focus = Focus::PemFilePath,
+                KeyCode::Tab => self.focus = Focus::MainTabs,
                 KeyCode::BackTab => self.focus = Focus::PemButton,
                 _ => {}
             },
@@ -741,6 +771,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         Tab::Firmware => 0,
         Tab::ExtractPem => 1,
     };
+    let main_tabs_focused = app.focus == Focus::MainTabs && app.file_browser.is_none();
     let tabs = Tabs::new(
         tab_titles
             .iter()
@@ -751,6 +782,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     .block(
         Block::default()
             .borders(Borders::ALL)
+            .border_style(if main_tabs_focused {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            })
             .title(" Seestar Tool "),
     )
     .highlight_style(
