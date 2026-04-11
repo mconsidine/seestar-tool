@@ -50,6 +50,7 @@ enum Focus {
     Host,
     VersionList,
     ActionButton,
+    DownloadButton,
     PemFilePath,
     PemButton,
     PemSaveButton,
@@ -58,12 +59,24 @@ enum Focus {
 
 // ── file browser ──────────────────────────────────────────────────────────────
 
-/// Which path field the file browser was opened from.
+/// What the file browser was opened for.
 #[derive(Clone, Copy, PartialEq)]
 enum BrowserTarget {
     Apk,
     Iscope,
     Pem,
+    /// Directory to save the PEM file into.
+    SavePemDir,
+    /// Directory to download the XAPK into; `install` controls whether to also flash.
+    DownloadDir {
+        install: bool,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum BrowserMode {
+    FileSelect,
+    DirSelect,
 }
 
 struct FileBrowser {
@@ -72,12 +85,27 @@ struct FileBrowser {
     entries: Vec<(String, PathBuf, bool)>,
     state: ListState,
     target: BrowserTarget,
-    /// file-extension filter (empty = show all files)
+    /// file-extension filter (only used in FileSelect mode; empty = all files)
     filter: &'static [&'static str],
+    mode: BrowserMode,
 }
 
 impl FileBrowser {
-    fn open(start: &str, target: BrowserTarget, filter: &'static [&'static str]) -> Self {
+    fn open_file(start: &str, target: BrowserTarget, filter: &'static [&'static str]) -> Self {
+        Self::open_impl(start, target, filter, BrowserMode::FileSelect)
+    }
+
+    fn open_dir(start: PathBuf, target: BrowserTarget) -> Self {
+        let start_str = start.to_string_lossy().into_owned();
+        Self::open_impl(&start_str, target, &[], BrowserMode::DirSelect)
+    }
+
+    fn open_impl(
+        start: &str,
+        target: BrowserTarget,
+        filter: &'static [&'static str],
+        mode: BrowserMode,
+    ) -> Self {
         let cwd = {
             let p = PathBuf::from(start);
             if p.is_dir() {
@@ -98,6 +126,7 @@ impl FileBrowser {
             state: ListState::default(),
             target,
             filter,
+            mode,
         };
         browser.reload();
         browser
@@ -106,7 +135,15 @@ impl FileBrowser {
     fn reload(&mut self) {
         self.entries.clear();
 
-        // always offer ".." unless already at root
+        // In dir-select mode, first entry selects the current directory
+        if self.mode == BrowserMode::DirSelect {
+            self.entries.push((
+                "[ Use this directory ]".to_string(),
+                self.cwd.clone(),
+                false,
+            ));
+        }
+
         if self.cwd.parent().is_some() {
             if let Some(parent) = self.cwd.parent() {
                 self.entries
@@ -121,18 +158,18 @@ impl FileBrowser {
             for entry in rd.flatten() {
                 let path = entry.path();
                 let name = entry.file_name().to_string_lossy().to_string();
-                // skip hidden files
                 if name.starts_with('.') {
                     continue;
                 }
                 if path.is_dir() {
                     dirs.push((name, path));
-                } else if self.filter.is_empty()
-                    || path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| self.filter.contains(&e))
-                        .unwrap_or(false)
+                } else if self.mode == BrowserMode::FileSelect
+                    && (self.filter.is_empty()
+                        || path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| self.filter.contains(&e))
+                            .unwrap_or(false))
                 {
                     files.push((name, path));
                 }
@@ -161,27 +198,19 @@ impl FileBrowser {
         }
     }
 
-    fn selected_path(&self) -> Option<&PathBuf> {
-        self.state.selected().map(|i| &self.entries[i].1)
-    }
-
-    fn selected_is_dir(&self) -> bool {
-        self.state
-            .selected()
-            .map(|i| self.entries[i].2)
-            .unwrap_or(false)
-    }
-
+    /// Returns `Some(path)` when a file or the "use this dir" entry is selected.
     fn enter(&mut self) -> Option<PathBuf> {
-        if self.selected_is_dir() {
-            if let Some(path) = self.selected_path().cloned() {
-                self.cwd = path;
-                self.state.select(Some(0));
-                self.reload();
-            }
+        let idx = self.state.selected()?;
+        if self.entries[idx].2 {
+            // directory — navigate into it
+            let path = self.entries[idx].1.clone();
+            self.cwd = path;
+            self.state.select(Some(0));
+            self.reload();
             None
         } else {
-            self.selected_path().cloned()
+            // file or "use this directory" in DirSelect mode
+            Some(self.entries[idx].1.clone())
         }
     }
 
@@ -346,28 +375,10 @@ impl App {
         }
     }
 
-    fn action_label(&self) -> &'static str {
-        match self.fw_source {
-            FirmwareSource::LocalApk | FirmwareSource::LocalIscope => "Install",
-            FirmwareSource::Download => {
-                if self.host.trim().is_empty() {
-                    "Download Only"
-                } else {
-                    "Download & Install"
-                }
-            }
-        }
-    }
-
     fn run_action(&mut self) {
         if self.busy {
             return;
         }
-        let (tx, rx) = task::channel();
-        self.rx = rx;
-        self.busy = true;
-        self.progress = Some((0, 0));
-
         match self.fw_source {
             FirmwareSource::LocalApk => {
                 let path = self.apk_path.trim().to_string();
@@ -376,10 +387,12 @@ impl App {
                         Style::default().fg(Color::Red),
                         "No APK path entered.".to_string(),
                     );
-                    self.busy = false;
-                    self.progress = None;
                     return;
                 }
+                let (tx, rx) = task::channel();
+                self.rx = rx;
+                self.busy = true;
+                self.progress = Some((0, 0));
                 crate::runner::install_apk(&self.rt, tx, path, self.host.trim().to_string());
             }
             FirmwareSource::LocalIscope => {
@@ -389,47 +402,48 @@ impl App {
                         Style::default().fg(Color::Red),
                         "No iscope path entered.".to_string(),
                     );
-                    self.busy = false;
-                    self.progress = None;
                     return;
                 }
+                let (tx, rx) = task::channel();
+                self.rx = rx;
+                self.busy = true;
+                self.progress = Some((0, 0));
                 crate::runner::install_iscope(&self.rt, tx, path, self.host.trim().to_string());
             }
             FirmwareSource::Download => {
-                let idx = match self.version_state.selected() {
-                    Some(i) => i,
-                    None => {
-                        self.push_log(
-                            Style::default().fg(Color::Red),
-                            "No version selected.".to_string(),
-                        );
-                        self.busy = false;
-                        self.progress = None;
-                        return;
-                    }
-                };
-                let ver = &self.versions[idx];
-                let dest = dirs_next::download_dir().unwrap_or_else(|| PathBuf::from("."));
-                if self.host.trim().is_empty() {
-                    crate::runner::download_only(
-                        &self.rt,
-                        tx,
-                        ver.version.clone(),
-                        ver.download_url.clone(),
-                        dest,
+                // Open a directory browser; download starts after selection
+                if self.version_state.selected().is_none() {
+                    self.push_log(
+                        Style::default().fg(Color::Red),
+                        "No version selected.".to_string(),
                     );
-                } else {
-                    crate::runner::download_and_install(
-                        &self.rt,
-                        tx,
-                        ver.version.clone(),
-                        ver.download_url.clone(),
-                        dest,
-                        self.host.trim().to_string(),
-                    );
+                    return;
                 }
+                let start = dirs_next::download_dir().unwrap_or_else(|| PathBuf::from("."));
+                self.file_browser = Some(FileBrowser::open_dir(
+                    start,
+                    BrowserTarget::DownloadDir { install: true },
+                ));
             }
         }
+    }
+
+    fn run_download_only(&mut self) {
+        if self.busy {
+            return;
+        }
+        if self.version_state.selected().is_none() {
+            self.push_log(
+                Style::default().fg(Color::Red),
+                "No version selected.".to_string(),
+            );
+            return;
+        }
+        let start = dirs_next::download_dir().unwrap_or_else(|| PathBuf::from("."));
+        self.file_browser = Some(FileBrowser::open_dir(
+            start,
+            BrowserTarget::DownloadDir { install: false },
+        ));
     }
 
     fn run_pem(&mut self) {
@@ -450,14 +464,60 @@ impl App {
         crate::runner::extract_pem(&self.rt, tx, path);
     }
 
-    fn save_pem(&self) {
+    fn save_pem(&mut self) {
         if self.pem_keys.is_empty() {
+            self.push_log(
+                Style::default().fg(Color::Red),
+                "No PEM keys to save — extract first.".to_string(),
+            );
             return;
         }
-        let path = PathBuf::from("seestar_keys.pem");
+        let start = dirs_next::download_dir().unwrap_or_else(|| PathBuf::from("."));
+        self.file_browser = Some(FileBrowser::open_dir(start, BrowserTarget::SavePemDir));
+    }
+
+    fn do_save_pem_to(&mut self, dir: PathBuf) {
+        let dest = dir.join("seestar_keys.pem");
         let content = self.pem_keys.join("\n");
-        if std::fs::write(&path, content).is_ok() {
-            eprintln!("Saved PEM keys to {}", path.display());
+        match std::fs::write(&dest, content) {
+            Ok(()) => self.push_log(
+                Style::default().fg(Color::Green),
+                format!("Saved PEM keys to {}", dest.display()),
+            ),
+            Err(e) => self.push_log(
+                Style::default().fg(Color::Red),
+                format!("Failed to save: {e}"),
+            ),
+        }
+    }
+
+    fn do_download(&mut self, dest: PathBuf, install: bool) {
+        let idx = match self.version_state.selected() {
+            Some(i) => i,
+            None => return,
+        };
+        let ver = &self.versions[idx];
+        let (tx, rx) = task::channel();
+        self.rx = rx;
+        self.busy = true;
+        self.progress = Some((0, 0));
+        if install && !self.host.trim().is_empty() {
+            crate::runner::download_and_install(
+                &self.rt,
+                tx,
+                ver.version.clone(),
+                ver.download_url.clone(),
+                dest,
+                self.host.trim().to_string(),
+            );
+        } else {
+            crate::runner::download_only(
+                &self.rt,
+                tx,
+                ver.version.clone(),
+                ver.download_url.clone(),
+                dest,
+            );
         }
     }
 
@@ -477,27 +537,36 @@ impl App {
             Focus::PemFilePath => (BrowserTarget::Pem, &self.pem_path, &["apk", "xapk"]),
             _ => return,
         };
-        self.file_browser = Some(FileBrowser::open(start, target, filter));
+        self.file_browser = Some(FileBrowser::open_file(start, target, filter));
     }
 
     fn apply_browser_selection(&mut self, path: PathBuf) {
-        let s = path.to_string_lossy().to_string();
-        match self.file_browser.as_ref().map(|b| b.target) {
+        let target = self.file_browser.as_ref().map(|b| b.target);
+        self.file_browser = None;
+        match target {
             Some(BrowserTarget::Apk) => {
+                let s = path.to_string_lossy().to_string();
                 self.apk_cursor = s.len();
                 self.apk_path = s;
             }
             Some(BrowserTarget::Iscope) => {
+                let s = path.to_string_lossy().to_string();
                 self.iscope_cursor = s.len();
                 self.iscope_path = s;
             }
             Some(BrowserTarget::Pem) => {
+                let s = path.to_string_lossy().to_string();
                 self.pem_cursor = s.len();
                 self.pem_path = s;
             }
+            Some(BrowserTarget::SavePemDir) => {
+                self.do_save_pem_to(path);
+            }
+            Some(BrowserTarget::DownloadDir { install }) => {
+                self.do_download(path, install);
+            }
             None => {}
         }
-        self.file_browser = None;
     }
 
     // ── key handling ──────────────────────────────────────────────────────────
@@ -682,13 +751,31 @@ impl App {
             },
             Focus::ActionButton => match code {
                 KeyCode::Enter | KeyCode::Char(' ') => self.run_action(),
-                KeyCode::Tab => self.focus = Focus::Logs,
+                KeyCode::Tab => {
+                    if self.fw_source == FirmwareSource::Download {
+                        self.focus = Focus::DownloadButton;
+                    } else {
+                        self.focus = Focus::Logs;
+                    }
+                }
                 KeyCode::BackTab => self.focus = Focus::Host,
+                _ => {}
+            },
+            Focus::DownloadButton => match code {
+                KeyCode::Enter | KeyCode::Char(' ') => self.run_download_only(),
+                KeyCode::Tab => self.focus = Focus::Logs,
+                KeyCode::BackTab => self.focus = Focus::ActionButton,
                 _ => {}
             },
             Focus::Logs => match code {
                 KeyCode::Tab => self.focus = Focus::MainTabs,
-                KeyCode::BackTab => self.focus = Focus::ActionButton,
+                KeyCode::BackTab => {
+                    if self.fw_source == FirmwareSource::Download {
+                        self.focus = Focus::DownloadButton;
+                    } else {
+                        self.focus = Focus::ActionButton;
+                    }
+                }
                 _ => {}
             },
             _ => {}
@@ -929,31 +1016,85 @@ fn draw_firmware(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     draw_text_input(
         f,
         chunks[3],
-        "Seestar Host/IP (leave blank to download only)",
+        "Seestar Host/IP (optional — leave blank to download only)",
         &app.host,
         app.host_cursor,
         app.focus == Focus::Host && app.file_browser.is_none(),
     );
 
-    // ── action button ────────────────────────────────────────────────────────
-    let btn_label = app.action_label();
-    let btn_style = if app.focus == Focus::ActionButton && app.file_browser.is_none() {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::LightGreen)
-            .add_modifier(Modifier::BOLD)
-    } else if app.busy {
-        Style::default().fg(Color::DarkGray)
+    // ── action button(s) ─────────────────────────────────────────────────────
+    if app.fw_source == FirmwareSource::Download && !app.host.trim().is_empty() {
+        // Show two buttons side by side: Download & Install | Download Only
+        let btn_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[4]);
+
+        let install_style = if app.focus == Focus::ActionButton && app.file_browser.is_none() {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD)
+        } else if app.busy {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        };
+        let dl_only_style = if app.focus == Focus::DownloadButton && app.file_browser.is_none() {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD)
+        } else if app.busy {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        };
+        f.render_widget(
+            Paragraph::new("[ Download & Install ]")
+                .alignment(Alignment::Center)
+                .style(install_style)
+                .block(Block::default().borders(Borders::ALL)),
+            btn_chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new("[ Download Only ]")
+                .alignment(Alignment::Center)
+                .style(dl_only_style)
+                .block(Block::default().borders(Borders::ALL)),
+            btn_chunks[1],
+        );
     } else {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
-    };
-    let btn = Paragraph::new(format!("[ {} ]", btn_label))
-        .alignment(Alignment::Center)
-        .style(btn_style)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(btn, chunks[4]);
+        // Single button
+        let btn_label = if app.fw_source == FirmwareSource::Download {
+            "[ Download Only ]"
+        } else {
+            "[ Install ]"
+        };
+        let btn_style = if app.focus == Focus::ActionButton && app.file_browser.is_none() {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD)
+        } else if app.busy {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        };
+        f.render_widget(
+            Paragraph::new(btn_label)
+                .alignment(Alignment::Center)
+                .style(btn_style)
+                .block(Block::default().borders(Borders::ALL)),
+            chunks[4],
+        );
+    }
 
     draw_logs(f, app, chunks[5]);
     draw_progress(f, app, chunks[6]);
@@ -1046,7 +1187,6 @@ fn draw_pem(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_file_browser(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    // Center a popup that's 80% wide and 70% tall
     let popup_width = (area.width * 4 / 5).max(40);
     let popup_height = (area.height * 7 / 10).max(10);
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
@@ -1057,13 +1197,19 @@ fn draw_file_browser(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 
     if let Some(browser) = app.file_browser.as_mut() {
         let cwd_str = browser.cwd.to_string_lossy();
+        let is_dir_mode = browser.mode == BrowserMode::DirSelect;
         let title = format!(" {} ", cwd_str);
 
+        let action_hint = if is_dir_mode {
+            "select dir"
+        } else {
+            "open/select"
+        };
         let footer = Line::from(vec![
             Span::styled(" ↑↓", Style::default().fg(Color::Yellow)),
             Span::raw(" navigate  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" open/select  "),
+            Span::raw(format!(" {action_hint}  ")),
             Span::styled("⌫", Style::default().fg(Color::Yellow)),
             Span::raw(" parent  "),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
@@ -1080,7 +1226,15 @@ fn draw_file_browser(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
             .entries
             .iter()
             .map(|(name, _, is_dir)| {
-                if *is_dir {
+                // "[ Use this directory ]" is not flagged as is_dir — style it distinctly
+                if name.starts_with('[') {
+                    ListItem::new(Line::from(Span::styled(
+                        name.clone(),
+                        Style::default()
+                            .fg(Color::LightGreen)
+                            .add_modifier(Modifier::BOLD),
+                    )))
+                } else if *is_dir {
                     ListItem::new(Line::from(Span::styled(
                         name.clone(),
                         Style::default()
