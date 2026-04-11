@@ -898,7 +898,7 @@ fn draw_firmware(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let btn_style = if app.focus == Focus::ActionButton && app.file_browser.is_none() {
         Style::default()
             .fg(Color::Black)
-            .bg(Color::Yellow)
+            .bg(Color::LightGreen)
             .add_modifier(Modifier::BOLD)
     } else if app.busy {
         Style::default().fg(Color::DarkGray)
