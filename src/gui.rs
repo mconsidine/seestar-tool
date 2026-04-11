@@ -523,10 +523,14 @@ impl eframe::App for SeestarApp {
             };
 
             let mut open = true;
-            egui::Window::new(title)
+            let dlg_frame = egui::Frame::window(&ctx.style())
+                .fill(c_surface())
+                .stroke(egui::Stroke::new(1.0, c_border()));
+            egui::Window::new(egui::RichText::new(title).color(c_text()).strong())
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .frame(dlg_frame)
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.add_space(4.0);
