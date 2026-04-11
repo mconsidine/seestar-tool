@@ -1150,6 +1150,7 @@ fn draw_progress(f: &mut ratatui::Frame, app: &App, area: Rect) {
         }
         Some((done, total)) => {
             if total == 0 {
+                // Indeterminate — install phase or waiting for scope to come back
                 let label = if app.busy { "Working…" } else { "" };
                 let gauge = Gauge::default()
                     .block(Block::default().borders(Borders::ALL))
@@ -1157,7 +1158,19 @@ fn draw_progress(f: &mut ratatui::Frame, app: &App, area: Rect) {
                     .ratio(0.5)
                     .label(label);
                 f.render_widget(gauge, area);
+            } else if total <= 600 {
+                // Seconds-based countdown from firmware install estimate
+                let ratio = (done as f64 / total as f64).clamp(0.0, 1.0);
+                let remaining = total.saturating_sub(done);
+                let label = format!("Installing… {remaining}s remaining");
+                let gauge = Gauge::default()
+                    .block(Block::default().borders(Borders::ALL))
+                    .gauge_style(Style::default().fg(Color::Yellow).bg(Color::DarkGray))
+                    .ratio(ratio)
+                    .label(label);
+                f.render_widget(gauge, area);
             } else {
+                // Byte-based download progress
                 let ratio = (done as f64 / total as f64).clamp(0.0, 1.0);
                 let label = format!(
                     "{:.1} / {:.1} MB  ({:.0}%)",
