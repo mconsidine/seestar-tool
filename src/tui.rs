@@ -57,6 +57,55 @@ enum Focus {
     Logs,
 }
 
+// ── confirm dialog ────────────────────────────────────────────────────────────
+
+#[derive(Clone, PartialEq)]
+enum ConfirmAction {
+    InstallApk(String),
+    InstallIscope(String),
+    DownloadAndInstall {
+        version: String,
+        url: String,
+        dest: PathBuf,
+        host: String,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ConfirmFocus {
+    Yes,
+    No,
+}
+
+struct ConfirmDialog {
+    action: ConfirmAction,
+    focus: ConfirmFocus,
+}
+
+impl ConfirmDialog {
+    fn new(action: ConfirmAction) -> Self {
+        Self {
+            action,
+            focus: ConfirmFocus::No,
+        }
+    }
+
+    fn body(&self) -> &'static str {
+        match &self.action {
+            ConfirmAction::InstallApk(_) | ConfirmAction::InstallIscope(_) => {
+                "This will upload firmware to your Seestar.\n\
+                 The scope will reboot during installation.\n\
+                 Ensure it is fully charged and network is stable."
+            }
+            ConfirmAction::DownloadAndInstall { .. } => {
+                "This will download and upload firmware to your Seestar.\n\
+                 The scope will reboot during installation.\n\
+                 Ensure it is fully charged and network is stable."
+            }
+        }
+    }
+}
+
 // ── file browser ──────────────────────────────────────────────────────────────
 
 /// What the file browser was opened for.
@@ -271,6 +320,9 @@ struct App {
     // file browser overlay
     file_browser: Option<FileBrowser>,
 
+    // confirmation dialog
+    confirm: Option<ConfirmDialog>,
+
     quit: bool,
 }
 
@@ -299,6 +351,7 @@ impl App {
             host_cursor: "seestar.local".len(),
             pem_cursor: 0,
             file_browser: None,
+            confirm: None,
             quit: false,
         };
         app.start_fetch_versions(tx);
@@ -389,11 +442,7 @@ impl App {
                     );
                     return;
                 }
-                let (tx, rx) = task::channel();
-                self.rx = rx;
-                self.busy = true;
-                self.progress = Some((0, 0));
-                crate::runner::install_apk(&self.rt, tx, path, self.host.trim().to_string());
+                self.confirm = Some(ConfirmDialog::new(ConfirmAction::InstallApk(path)));
             }
             FirmwareSource::LocalIscope => {
                 let path = self.iscope_path.trim().to_string();
@@ -404,14 +453,10 @@ impl App {
                     );
                     return;
                 }
-                let (tx, rx) = task::channel();
-                self.rx = rx;
-                self.busy = true;
-                self.progress = Some((0, 0));
-                crate::runner::install_iscope(&self.rt, tx, path, self.host.trim().to_string());
+                self.confirm = Some(ConfirmDialog::new(ConfirmAction::InstallIscope(path)));
             }
             FirmwareSource::Download => {
-                // Open a directory browser; download starts after selection
+                // First pick a directory, then confirm
                 if self.version_state.selected().is_none() {
                     self.push_log(
                         Style::default().fg(Color::Red),
@@ -439,6 +484,7 @@ impl App {
             );
             return;
         }
+        // Download-only doesn't need a confirm — just pick the directory
         let start = dirs_next::download_dir().unwrap_or_else(|| PathBuf::from("."));
         self.file_browser = Some(FileBrowser::open_dir(
             start,
@@ -497,20 +543,20 @@ impl App {
             None => return,
         };
         let ver = &self.versions[idx];
-        let (tx, rx) = task::channel();
-        self.rx = rx;
-        self.busy = true;
-        self.progress = Some((0, 0));
         if install && !self.host.trim().is_empty() {
-            crate::runner::download_and_install(
-                &self.rt,
-                tx,
-                ver.version.clone(),
-                ver.download_url.clone(),
+            // Show confirmation before installing
+            self.confirm = Some(ConfirmDialog::new(ConfirmAction::DownloadAndInstall {
+                version: ver.version.clone(),
+                url: ver.download_url.clone(),
                 dest,
-                self.host.trim().to_string(),
-            );
+                host: self.host.trim().to_string(),
+            }));
         } else {
+            // Download-only: start immediately
+            let (tx, rx) = task::channel();
+            self.rx = rx;
+            self.busy = true;
+            self.progress = Some((0, 0));
             crate::runner::download_only(
                 &self.rt,
                 tx,
@@ -518,6 +564,40 @@ impl App {
                 ver.download_url.clone(),
                 dest,
             );
+        }
+    }
+
+    fn execute_confirmed(&mut self) {
+        let Some(dlg) = self.confirm.take() else {
+            return;
+        };
+        match dlg.action {
+            ConfirmAction::InstallApk(path) => {
+                let (tx, rx) = task::channel();
+                self.rx = rx;
+                self.busy = true;
+                self.progress = Some((0, 0));
+                crate::runner::install_apk(&self.rt, tx, path, self.host.trim().to_string());
+            }
+            ConfirmAction::InstallIscope(path) => {
+                let (tx, rx) = task::channel();
+                self.rx = rx;
+                self.busy = true;
+                self.progress = Some((0, 0));
+                crate::runner::install_iscope(&self.rt, tx, path, self.host.trim().to_string());
+            }
+            ConfirmAction::DownloadAndInstall {
+                version,
+                url,
+                dest,
+                host,
+            } => {
+                let (tx, rx) = task::channel();
+                self.rx = rx;
+                self.busy = true;
+                self.progress = Some((0, 0));
+                crate::runner::download_and_install(&self.rt, tx, version, url, dest, host);
+            }
         }
     }
 
@@ -584,6 +664,12 @@ impl App {
             _ => {}
         }
 
+        // Confirm dialog consumes all keys when open
+        if self.confirm.is_some() {
+            self.handle_key_confirm(code);
+            return;
+        }
+
         // File browser consumes all keys when open
         if self.file_browser.is_some() {
             self.handle_key_browser(code);
@@ -598,6 +684,33 @@ impl App {
         match self.tab {
             Tab::Firmware => self.handle_key_firmware(code, modifiers),
             Tab::ExtractPem => self.handle_key_pem(code, modifiers),
+        }
+    }
+
+    fn handle_key_confirm(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.confirm = None;
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
+                if let Some(dlg) = self.confirm.as_mut() {
+                    dlg.focus = match dlg.focus {
+                        ConfirmFocus::Yes => ConfirmFocus::No,
+                        ConfirmFocus::No => ConfirmFocus::Yes,
+                    };
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if let Some(dlg) = self.confirm.as_ref() {
+                    match dlg.focus {
+                        ConfirmFocus::Yes => self.execute_confirmed(),
+                        ConfirmFocus::No => {
+                            self.confirm = None;
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -896,6 +1009,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         Tab::ExtractPem => draw_pem(f, app, top_chunks[1]),
     }
 
+    // Confirm dialog (drawn above file browser)
+    if app.confirm.is_some() {
+        draw_confirm_dialog(f, app, area);
+    }
+
     // File browser overlay (drawn on top)
     if app.file_browser.is_some() {
         draw_file_browser(f, app, area);
@@ -1184,6 +1302,90 @@ fn draw_pem(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     }
 
     draw_progress(f, app, chunks[3]);
+}
+
+fn draw_confirm_dialog(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    let Some(dlg) = app.confirm.as_ref() else {
+        return;
+    };
+
+    let popup_width = (area.width * 2 / 3).max(50).min(area.width);
+    let body_lines = dlg.body().lines().count() as u16;
+    let popup_height = body_lines + 7; // title + body + spacing + buttons + border
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red))
+        .title(Span::styled(
+            " ⚠  Confirm Firmware Update ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let inner_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Min(1),    // body text
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // buttons
+        ])
+        .split(inner);
+
+    // Body
+    let body_lines: Vec<Line> = dlg
+        .body()
+        .lines()
+        .map(|l| {
+            Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(Color::White),
+            ))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(body_lines), inner_chunks[0]);
+
+    // Buttons row
+    let yes_style = if dlg.focus == ConfirmFocus::Yes {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Red)
+    };
+    let no_style = if dlg.focus == ConfirmFocus::No {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightGreen)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::LightGreen)
+    };
+
+    let btn_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner_chunks[2]);
+
+    f.render_widget(
+        Paragraph::new("[ Yes, update ]")
+            .alignment(Alignment::Center)
+            .style(yes_style),
+        btn_chunks[0],
+    );
+    f.render_widget(
+        Paragraph::new("[ Cancel ]")
+            .alignment(Alignment::Center)
+            .style(no_style),
+        btn_chunks[1],
+    );
 }
 
 fn draw_file_browser(f: &mut ratatui::Frame, app: &mut App, area: Rect) {

@@ -200,6 +200,14 @@ enum FirmwareSource {
     Download,    // fetch from APKPure
 }
 
+/// Which install action is awaiting confirmation.
+#[derive(Clone, Copy, PartialEq)]
+enum PendingAction {
+    InstallApk,
+    InstallIscope,
+    DownloadAndInstall,
+}
+
 struct FirmwareTab {
     source: FirmwareSource,
     apk_path: String,
@@ -217,6 +225,8 @@ struct FirmwareTab {
     rx: Option<Receiver>,
     rt: Arc<tokio::runtime::Runtime>,
     downloaded_apk: Option<PathBuf>,
+    /// Set when user clicks an install button; cleared on confirm or cancel.
+    confirm: Option<PendingAction>,
 }
 
 impl FirmwareTab {
@@ -237,6 +247,7 @@ impl FirmwareTab {
             rx: None,
             rt,
             downloaded_apk: None,
+            confirm: None,
         }
     }
 
@@ -341,7 +352,12 @@ impl FirmwareTab {
         self.busy = true;
         self.log.clear();
         self.progress = (0, 0);
-        crate::runner::install_apk(&self.rt, tx, self.apk_path.clone(), self.seestar_host.clone());
+        crate::runner::install_apk(
+            &self.rt,
+            tx,
+            self.apk_path.clone(),
+            self.seestar_host.clone(),
+        );
     }
 
     fn start_install_iscope(&mut self) {
@@ -351,7 +367,12 @@ impl FirmwareTab {
         self.busy = true;
         self.log.clear();
         self.progress = (0, 0);
-        crate::runner::install_iscope(&self.rt, tx, self.iscope_path.clone(), self.seestar_host.clone());
+        crate::runner::install_iscope(
+            &self.rt,
+            tx,
+            self.iscope_path.clone(),
+            self.seestar_host.clone(),
+        );
     }
 }
 
@@ -481,6 +502,57 @@ impl eframe::App for SeestarApp {
                 Tab::Firmware => draw_firmware(ui, &mut self.fw),
                 Tab::ExtractPem => draw_pem(ui, &mut self.pem),
             });
+
+        // Confirmation modal — blocks other interaction
+        if let Some(action) = self.fw.confirm {
+            let (title, body) = match action {
+                PendingAction::InstallApk | PendingAction::InstallIscope => (
+                    "Confirm Firmware Update",
+                    "This will upload firmware directly to your Seestar.\n\
+                     The scope will reboot during installation.\n\n\
+                     Ensure the scope is fully charged and your network is stable.\n\n\
+                     Continue?",
+                ),
+                PendingAction::DownloadAndInstall => (
+                    "Confirm Download & Install",
+                    "This will download firmware from APKPure and upload it to your Seestar.\n\
+                     The scope will reboot during installation.\n\n\
+                     Ensure the scope is fully charged and your network is stable.\n\n\
+                     Continue?",
+                ),
+            };
+
+            let mut open = true;
+            egui::Window::new(title)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(body).color(c_text()));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.add(primary_btn("Yes, update")).clicked() {
+                            match action {
+                                PendingAction::InstallApk => self.fw.start_install_apk(),
+                                PendingAction::InstallIscope => self.fw.start_install_iscope(),
+                                PendingAction::DownloadAndInstall => {
+                                    self.fw.start_download_and_install()
+                                }
+                            }
+                            self.fw.confirm = None;
+                        }
+                        ui.add_space(8.0);
+                        if ui.add(secondary_btn("Cancel")).clicked() {
+                            self.fw.confirm = None;
+                        }
+                    });
+                });
+            if !open {
+                self.fw.confirm = None;
+            }
+        }
     }
 }
 
@@ -634,7 +706,7 @@ fn draw_firmware(ui: &mut egui::Ui, fw: &mut FirmwareTab) {
                             .add_enabled(ready, primary_btn("Update Seestar"))
                             .clicked()
                         {
-                            fw.start_install_apk();
+                            fw.confirm = Some(PendingAction::InstallApk);
                         }
                     }
                     FirmwareSource::LocalIscope => {
@@ -643,7 +715,7 @@ fn draw_firmware(ui: &mut egui::Ui, fw: &mut FirmwareTab) {
                             .add_enabled(ready, primary_btn("Update Seestar"))
                             .clicked()
                         {
-                            fw.start_install_iscope();
+                            fw.confirm = Some(PendingAction::InstallIscope);
                         }
                     }
                     FirmwareSource::Download => {
@@ -652,7 +724,7 @@ fn draw_firmware(ui: &mut egui::Ui, fw: &mut FirmwareTab) {
                             .add_enabled(ready, primary_btn("Download & Install"))
                             .clicked()
                         {
-                            fw.start_download_and_install();
+                            fw.confirm = Some(PendingAction::DownloadAndInstall);
                         }
                         if ui
                             .add_enabled(ready, secondary_btn("Download only"))
