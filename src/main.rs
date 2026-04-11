@@ -1,10 +1,20 @@
 mod apk;
 mod apkpure;
-mod app;
 mod firmware;
+mod gui;
 mod pem;
+mod runner;
+mod task;
+mod tui;
 
-fn main() -> eframe::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let use_tui = std::env::args().any(|a| a == "--tui");
+
+    if use_tui {
+        let rt = std::sync::Arc::new(tokio::runtime::Runtime::new()?);
+        return tui::run(rt);
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Seestar Tool")
@@ -16,6 +26,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Seestar Tool",
         options,
-        Box::new(|cc| Ok(Box::new(app::SeestarApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(gui::SeestarApp::new(cc)))),
     )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    Ok(())
 }

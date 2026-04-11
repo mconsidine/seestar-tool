@@ -6,6 +6,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Rounding, Stroke};
 
 use crate::apkpure::ApkVersion;
+use crate::task::{channel, Receiver, Sender, TaskMsg};
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 
@@ -181,29 +182,6 @@ fn section_label(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).color(c_muted()).size(11.5).strong());
 }
 
-// ── Shared state ──────────────────────────────────────────────────────────────
-
-/// Messages sent from background tasks to the UI.
-#[derive(Debug, Clone)]
-pub enum TaskMsg {
-    Log(String),
-    /// (bytes_done, total_bytes) — 0 total means indeterminate
-    Progress(u64, u64),
-    VersionList(Vec<ApkVersion>),
-    /// Path of a successfully downloaded APK
-    Downloaded(PathBuf),
-    PemKeys(Vec<String>),
-    Done,
-    Error(String),
-}
-
-type Sender = std::sync::mpsc::Sender<TaskMsg>;
-type Receiver = std::sync::mpsc::Receiver<TaskMsg>;
-
-fn channel() -> (Sender, Receiver) {
-    std::sync::mpsc::channel()
-}
-
 // ── Tab state ─────────────────────────────────────────────────────────────────
 
 #[derive(Default, PartialEq)]
@@ -318,30 +296,7 @@ impl FirmwareTab {
         self.busy = true;
         self.log.clear();
         self.log.push("Fetching version list…".to_string());
-
-        self.rt.spawn(async move {
-            let log = |s: String| {
-                let _ = tx.send(TaskMsg::Log(s));
-            };
-            // Try full version list first; fall back to latest-only endpoint.
-            let result = match crate::apkpure::fetch_versions(|s| log(s.clone())).await {
-                Ok(v) => Ok(v),
-                Err(_) => {
-                    log("Version list failed, trying latest-only endpoint…".to_string());
-                    crate::apkpure::fetch_latest(|s| log(s.clone()))
-                        .await
-                        .map(|v| vec![v])
-                }
-            };
-            match result {
-                Ok(versions) => {
-                    let _ = tx.send(TaskMsg::VersionList(versions));
-                }
-                Err(e) => {
-                    let _ = tx.send(TaskMsg::Error(e.to_string()));
-                }
-            }
-        });
+        crate::runner::fetch_versions(&self.rt, tx);
     }
 
     fn start_download(&mut self) {
@@ -351,7 +306,6 @@ impl FirmwareTab {
         let dest_dir = std::env::current_dir()
             .unwrap_or_default()
             .join(format!("v{}", version));
-
         let (tx, rx) = channel();
         self.tx = Some(tx.clone());
         self.rx = Some(rx);
@@ -359,25 +313,7 @@ impl FirmwareTab {
         self.log.clear();
         self.downloaded_apk = None;
         self.progress = (0, 0);
-
-        let tx2 = tx.clone();
-        self.rt.spawn(async move {
-            let prog = {
-                let tx = tx.clone();
-                move |d, t| {
-                    let _ = tx.send(TaskMsg::Progress(d, t));
-                }
-            };
-            match crate::apkpure::download_version(&version, &download_url, &dest_dir, prog).await {
-                Ok(path) => {
-                    let _ = tx2.send(TaskMsg::Downloaded(path));
-                    let _ = tx2.send(TaskMsg::Done);
-                }
-                Err(e) => {
-                    let _ = tx2.send(TaskMsg::Error(e.to_string()));
-                }
-            }
-        });
+        crate::runner::download_only(&self.rt, tx, version, download_url, dest_dir);
     }
 
     fn start_download_and_install(&mut self) {
@@ -385,11 +321,9 @@ impl FirmwareTab {
             return;
         };
         let host = self.seestar_host.clone();
-
         let dest_dir = std::env::current_dir()
             .unwrap_or_default()
             .join(format!("v{}", version));
-
         let (tx, rx) = channel();
         self.tx = Some(tx.clone());
         self.rx = Some(rx);
@@ -397,146 +331,27 @@ impl FirmwareTab {
         self.log.clear();
         self.downloaded_apk = None;
         self.progress = (0, 0);
-
-        let tx2 = tx.clone();
-        self.rt.spawn(async move {
-            // Download
-            let prog = {
-                let tx = tx.clone();
-                move |d, t| {
-                    let _ = tx.send(TaskMsg::Progress(d, t));
-                }
-            };
-            let path =
-                match crate::apkpure::download_version(&version, &download_url, &dest_dir, prog)
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        let _ = tx2.send(TaskMsg::Error(e.to_string()));
-                        return;
-                    }
-                };
-            let _ = tx2.send(TaskMsg::Downloaded(path.clone()));
-            let _ = tx2.send(TaskMsg::Progress(0, 0));
-
-            // Extract + upload (blocking; run in spawn_blocking)
-            let tx_log = tx2.clone();
-            let tx_up = tx2.clone();
-            let tx_ext = tx2.clone();
-            let host2 = host.clone();
-            let path2 = path.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let iscope = crate::firmware::extract_iscope(
-                    path2.to_str().unwrap_or_default(),
-                    move |s| {
-                        let _ = tx_ext.send(TaskMsg::Log(s));
-                    },
-                )?;
-                let log = move |s: String| {
-                    let _ = tx_log.send(TaskMsg::Log(s));
-                };
-                let up = move |d, t| {
-                    let _ = tx_up.send(TaskMsg::Progress(d, t));
-                };
-                crate::firmware::upload_firmware(&host2, &iscope, "iscope", log, up)
-            })
-            .await;
-
-            match result {
-                Ok(Ok(())) => {
-                    let _ = tx2.send(TaskMsg::Done);
-                }
-                Ok(Err(e)) => {
-                    let _ = tx2.send(TaskMsg::Error(e.to_string()));
-                }
-                Err(e) => {
-                    let _ = tx2.send(TaskMsg::Error(e.to_string()));
-                }
-            }
-        });
+        crate::runner::download_and_install(&self.rt, tx, version, download_url, dest_dir, host);
     }
 
     fn start_install_apk(&mut self) {
-        let apk = self.apk_path.clone();
-        let host = self.seestar_host.clone();
-
         let (tx, rx) = channel();
         self.tx = Some(tx.clone());
         self.rx = Some(rx);
         self.busy = true;
         self.log.clear();
         self.progress = (0, 0);
-
-        self.rt.spawn(async move {
-            let tx_log = tx.clone();
-            let tx_up = tx.clone();
-            let tx_ext = tx.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let iscope = crate::firmware::extract_iscope(&apk, move |s| {
-                    let _ = tx_ext.send(TaskMsg::Log(s));
-                })?;
-                let log = move |s: String| {
-                    let _ = tx_log.send(TaskMsg::Log(s));
-                };
-                let up = move |d, t| {
-                    let _ = tx_up.send(TaskMsg::Progress(d, t));
-                };
-                crate::firmware::upload_firmware(&host, &iscope, "iscope", log, up)
-            })
-            .await;
-
-            match result {
-                Ok(Ok(())) => {
-                    let _ = tx.send(TaskMsg::Done);
-                }
-                Ok(Err(e)) => {
-                    let _ = tx.send(TaskMsg::Error(e.to_string()));
-                }
-                Err(e) => {
-                    let _ = tx.send(TaskMsg::Error(e.to_string()));
-                }
-            }
-        });
+        crate::runner::install_apk(&self.rt, tx, self.apk_path.clone(), self.seestar_host.clone());
     }
 
     fn start_install_iscope(&mut self) {
-        let path = PathBuf::from(&self.iscope_path);
-        let host = self.seestar_host.clone();
-
         let (tx, rx) = channel();
         self.tx = Some(tx.clone());
         self.rx = Some(rx);
         self.busy = true;
         self.log.clear();
         self.progress = (0, 0);
-
-        self.rt.spawn(async move {
-            let tx_log = tx.clone();
-            let tx_up = tx.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let log = move |s: String| {
-                    let _ = tx_log.send(TaskMsg::Log(s));
-                };
-                let up = move |d, t| {
-                    let _ = tx_up.send(TaskMsg::Progress(d, t));
-                };
-                crate::firmware::upload_firmware_file(&host, &path, "iscope", log, up)
-            })
-            .await;
-
-            match result {
-                Ok(Ok(())) => {
-                    let _ = tx.send(TaskMsg::Done);
-                }
-                Ok(Err(e)) => {
-                    let _ = tx.send(TaskMsg::Error(e.to_string()));
-                }
-                Err(e) => {
-                    let _ = tx.send(TaskMsg::Error(e.to_string()));
-                }
-            }
-        });
+        crate::runner::install_iscope(&self.rt, tx, self.iscope_path.clone(), self.seestar_host.clone());
     }
 }
 
@@ -586,7 +401,6 @@ impl PemTab {
     }
 
     fn start_extract(&mut self) {
-        let apk = self.apk_path.clone();
         let (tx, rx) = channel();
         self.tx = Some(tx.clone());
         self.rx = Some(rx);
@@ -594,29 +408,7 @@ impl PemTab {
         self.log.clear();
         self.keys.clear();
         self.save_status = None;
-
-        self.rt.spawn(async move {
-            let tx2 = tx.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                crate::pem::extract_pem_from_apk(&apk, |s| {
-                    let _ = tx2.send(TaskMsg::Log(s));
-                })
-            })
-            .await;
-
-            match result {
-                Ok(Ok(r)) => {
-                    let _ = tx.send(TaskMsg::PemKeys(r.keys));
-                    let _ = tx.send(TaskMsg::Done);
-                }
-                Ok(Err(e)) => {
-                    let _ = tx.send(TaskMsg::Error(e.to_string()));
-                }
-                Err(e) => {
-                    let _ = tx.send(TaskMsg::Error(e.to_string()));
-                }
-            }
-        });
+        crate::runner::extract_pem(&self.rt, tx, self.apk_path.clone());
     }
 }
 
