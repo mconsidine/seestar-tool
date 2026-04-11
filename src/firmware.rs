@@ -1,7 +1,7 @@
 //! Firmware extraction and OTA upload.
 //! Mirrors extract_iscope() and upload_file()/wait_for_scope() from install_firmware.py.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::net::TcpStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -94,10 +94,10 @@ pub fn upload_firmware(
 
     // Read ACK.
     let ack = recv_line(&mut s_cmd)?;
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&ack) {
-        if !v["error"].is_null() {
-            return Err(anyhow!("Scope error: {}", v["error"]));
-        }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&ack)
+        && !v["error"].is_null()
+    {
+        return Err(anyhow!("Scope error: {}", v["error"]));
     }
 
     // Stream firmware on data socket.

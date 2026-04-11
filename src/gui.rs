@@ -6,7 +6,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Rounding, Stroke};
 
 use crate::apkpure::ApkVersion;
-use crate::task::{channel, Receiver, Sender, TaskMsg};
+use crate::task::{Receiver, Sender, TaskMsg, channel};
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 
@@ -958,18 +958,17 @@ fn draw_pem(ui: &mut egui::Ui, pem: &mut PemTab) {
                 ui.horizontal(|ui| {
                     section_label(ui, &format!("PRIVATE KEY {}", i + 1));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(secondary_btn("Save to file")).clicked() {
-                            if let Some(dest) = rfd::FileDialog::new()
+                        if ui.add(secondary_btn("Save to file")).clicked()
+                            && let Some(dest) = rfd::FileDialog::new()
                                 .add_filter("PEM", &["pem"])
                                 .set_file_name(format!("seestar_{}.pem", i + 1))
                                 .save_file()
-                            {
-                                pem.save_status =
-                                    Some(match std::fs::write(&dest, format!("{}\n", key)) {
-                                        Ok(_) => format!("Saved to {}", dest.display()),
-                                        Err(e) => format!("Save failed: {e}"),
-                                    });
-                            }
+                        {
+                            pem.save_status =
+                                Some(match std::fs::write(&dest, format!("{}\n", key)) {
+                                    Ok(_) => format!("Saved to {}", dest.display()),
+                                    Err(e) => format!("Save failed: {e}"),
+                                });
                         }
                     });
                 });

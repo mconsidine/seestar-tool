@@ -4,7 +4,7 @@
 //! the `apkeep` crate (EFF).  This endpoint is NOT behind the Cloudflare JS
 //! challenge that blocks ordinary browser-impersonation requests to the web UI.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use regex::Regex;
 use std::path::{Path, PathBuf};
@@ -108,15 +108,14 @@ async fn stream_download(
     let dest_path = dest_dir.join(&filename);
 
     // Reuse a complete, valid existing file.
-    if dest_path.exists() {
-        if let Ok(f) = std::fs::File::open(&dest_path) {
-            if zip::ZipArchive::new(f).is_ok() {
-                let size = tokio::fs::metadata(&dest_path).await?.len();
-                if total == 0 || size == total {
-                    progress(size, size);
-                    return Ok(dest_path);
-                }
-            }
+    if dest_path.exists()
+        && let Ok(f) = std::fs::File::open(&dest_path)
+        && zip::ZipArchive::new(f).is_ok()
+    {
+        let size = tokio::fs::metadata(&dest_path).await?.len();
+        if total == 0 || size == total {
+            progress(size, size);
+            return Ok(dest_path);
         }
     }
 
@@ -124,12 +123,11 @@ async fn stream_download(
     let mut rd = tokio::fs::read_dir(dest_dir).await?;
     while let Some(entry) = rd.next_entry().await? {
         let p = entry.path();
-        if p != dest_path {
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                if ext == "apk" || ext == "xapk" {
-                    tokio::fs::remove_file(&p).await.ok();
-                }
-            }
+        if p != dest_path
+            && let Some(ext) = p.extension().and_then(|e| e.to_str())
+            && (ext == "apk" || ext == "xapk")
+        {
+            tokio::fs::remove_file(&p).await.ok();
         }
     }
 
@@ -155,7 +153,7 @@ async fn stream_download(
                     "Download failed after {} attempts: {}",
                     MAX_RETRIES,
                     e
-                ))
+                ));
             }
             Err(_) => {
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;

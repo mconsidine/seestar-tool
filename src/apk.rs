@@ -1,6 +1,6 @@
 //! APK/XAPK handling — mirrors apk_utils.py and the AXML parser in extract_pem.py.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
 
@@ -445,7 +445,7 @@ mod tests {
         buf.extend_from_slice(&sp_size.to_le_bytes()); // sp_size
         buf.extend_from_slice(&0u32.to_le_bytes()); // str_count = 0
         buf.extend_from_slice(&[0u8; 16]); // remaining 4 header fields
-                                           // No offsets, no string data, no chunks → vn_idx = None
+        // No offsets, no string data, no chunks → vn_idx = None
         assert_eq!(parse_version_name(&buf), None);
     }
 

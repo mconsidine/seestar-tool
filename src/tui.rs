@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use crossterm::ExecutableCommand;
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,7 +17,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Tabs, Wrap,
 };
-use ratatui::Terminal;
 
 use crate::apkpure::ApkVersion;
 use crate::task::{self, TaskMsg};
@@ -193,11 +193,11 @@ impl FileBrowser {
             ));
         }
 
-        if self.cwd.parent().is_some() {
-            if let Some(parent) = self.cwd.parent() {
-                self.entries
-                    .push(("..".to_string(), parent.to_path_buf(), true));
-            }
+        if self.cwd.parent().is_some()
+            && let Some(parent) = self.cwd.parent()
+        {
+            self.entries
+                .push(("..".to_string(), parent.to_path_buf(), true));
         }
 
         let mut dirs: Vec<(String, PathBuf)> = vec![];
@@ -735,13 +735,13 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if let Some(b) = self.file_browser.as_mut() {
-                    if let Some(selected) = b.enter() {
-                        // file selected — close browser and apply
-                        self.apply_browser_selection(selected);
-                    }
-                    // directory was entered; browser stays open
+                if let Some(b) = self.file_browser.as_mut()
+                    && let Some(selected) = b.enter()
+                {
+                    // file selected — close browser and apply
+                    self.apply_browser_selection(selected);
                 }
+                // directory was entered; browser stays open
             }
             _ => {}
         }
@@ -1636,26 +1636,26 @@ pub fn run(rt: Arc<tokio::runtime::Runtime>) -> anyhow::Result<()> {
         terminal.draw(|f| draw(f, &mut app))?;
 
         let timeout = tick.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                // Global tab switch with F1/F2 (only when browser is closed)
-                if app.file_browser.is_none() {
-                    match key.code {
-                        KeyCode::F(1) => {
-                            app.tab = Tab::Firmware;
-                            app.focus = Focus::FilePath;
-                            continue;
-                        }
-                        KeyCode::F(2) => {
-                            app.tab = Tab::ExtractPem;
-                            app.focus = Focus::PemFilePath;
-                            continue;
-                        }
-                        _ => {}
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+        {
+            // Global tab switch with F1/F2 (only when browser is closed)
+            if app.file_browser.is_none() {
+                match key.code {
+                    KeyCode::F(1) => {
+                        app.tab = Tab::Firmware;
+                        app.focus = Focus::FilePath;
+                        continue;
                     }
+                    KeyCode::F(2) => {
+                        app.tab = Tab::ExtractPem;
+                        app.focus = Focus::PemFilePath;
+                        continue;
+                    }
+                    _ => {}
                 }
-                app.handle_key(key.code, key.modifiers);
             }
+            app.handle_key(key.code, key.modifiers);
         }
 
         if last_tick.elapsed() >= tick {
