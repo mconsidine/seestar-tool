@@ -52,6 +52,7 @@ enum Focus {
     ActionButton,
     PemFilePath,
     PemButton,
+    PemSaveButton,
     Logs,
 }
 
@@ -730,14 +731,19 @@ impl App {
             }
             Focus::PemButton => match code {
                 KeyCode::Enter | KeyCode::Char(' ') => self.run_pem(),
-                KeyCode::Char('s') => self.save_pem(),
-                KeyCode::Tab => self.focus = Focus::Logs,
+                KeyCode::Tab => self.focus = Focus::PemSaveButton,
                 KeyCode::BackTab => self.focus = Focus::PemFilePath,
+                _ => {}
+            },
+            Focus::PemSaveButton => match code {
+                KeyCode::Enter | KeyCode::Char(' ') => self.save_pem(),
+                KeyCode::Tab => self.focus = Focus::Logs,
+                KeyCode::BackTab => self.focus = Focus::PemButton,
                 _ => {}
             },
             Focus::Logs => match code {
                 KeyCode::Tab => self.focus = Focus::MainTabs,
-                KeyCode::BackTab => self.focus = Focus::PemButton,
+                KeyCode::BackTab => self.focus = Focus::PemSaveButton,
                 _ => {}
             },
             _ => {}
@@ -995,12 +1001,17 @@ fn draw_pem(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(extract_btn, btn_chunks[0]);
 
-    let save_style = if app.pem_keys.is_empty() {
+    let save_style = if app.focus == Focus::PemSaveButton && app.file_browser.is_none() {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightGreen)
+            .add_modifier(Modifier::BOLD)
+    } else if app.pem_keys.is_empty() {
         Style::default().fg(Color::DarkGray)
     } else {
         Style::default().fg(Color::Cyan)
     };
-    let save_btn = Paragraph::new("[ Save PEM (s) ]")
+    let save_btn = Paragraph::new("[ Save PEM ]")
         .alignment(Alignment::Center)
         .style(save_style)
         .block(Block::default().borders(Borders::ALL));
