@@ -85,6 +85,16 @@ Pick a Seestar APK/XAPK and click **Extract PEM Key**. The extracted key can be 
 
 ---
 
+## Interoperability and Legal Notice (Extract PEM)
+
+PEM key extraction is provided for **interoperability purposes** under 17 U.S.C. § 1201(f) — the DMCA interoperability exemption. That provision permits circumvention of access controls solely to the extent necessary to achieve interoperability of an independently created program with other programs. Extraction of the TLS private key is performed to enable independent software (such as [seestar-proxy](https://github.com/astrophotograph/seestar-proxy)) to interoperate with the Seestar device's local HTTPS API.
+
+**The legality of key extraction and use varies by jurisdiction.** The DMCA interoperability exemption applies within the United States. Laws governing reverse engineering, circumvention, and interoperability differ significantly across countries and regions. **You are solely responsible for ensuring that your use of this feature complies with the laws of your region.**
+
+The author(s) of this software make no representations regarding the legality of this feature outside the United States, and expressly disclaim any liability arising from use of the Extract PEM feature in jurisdictions where such activity may not be permitted.
+
+---
+
 ## Disclaimer and Warning
 
 > **Read carefully before use.**
