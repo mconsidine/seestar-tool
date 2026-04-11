@@ -855,6 +855,43 @@ fn log_line_style(line: &str) -> (Color32, &'static str) {
 // ── PEM tab ───────────────────────────────────────────────────────────────────
 
 fn draw_pem(ui: &mut egui::Ui, pem: &mut PemTab) {
+    // Legal notice
+    Frame::none()
+        .fill(Color32::from_rgb(26, 22, 10))
+        .rounding(Rounding::same(8.0))
+        .inner_margin(Margin::same(14.0))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(110, 88, 24)))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("Interoperability Notice")
+                    .color(c_warning())
+                    .strong()
+                    .size(13.0),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "PEM key extraction is provided for interoperability purposes under \
+                     17 U.S.C. \u{00a7} 1201(f) (the DMCA interoperability exemption), \
+                     enabling independent programs to interoperate with your Seestar device.",
+                )
+                .color(c_muted())
+                .size(12.5),
+            );
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(
+                    "The legality of key extraction and use varies by jurisdiction. \
+                     You are solely responsible for ensuring compliance with the laws \
+                     of your region.",
+                )
+                .color(c_muted())
+                .size(12.5),
+            );
+        });
+
+    ui.add_space(8.0);
+
     card_frame().show(ui, |ui| {
         ui.vertical(|ui| {
             section_label(ui, "APK SOURCE");

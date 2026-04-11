@@ -7,6 +7,19 @@ mod runner;
 mod task;
 mod tui;
 
+fn app_icon() -> egui::IconData {
+    let bytes = include_bytes!("../assets/icons/hicolor/256x256/seestar-tool.png");
+    let image = image::load_from_memory(bytes)
+        .expect("bundled icon is valid PNG")
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let use_tui = std::env::args().any(|a| a == "--tui");
 
@@ -19,7 +32,8 @@ fn main() -> anyhow::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("Seestar Tool")
             .with_inner_size([760.0, 620.0])
-            .with_min_inner_size([520.0, 440.0]),
+            .with_min_inner_size([520.0, 440.0])
+            .with_icon(app_icon()),
         ..Default::default()
     };
 

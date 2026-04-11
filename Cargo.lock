@@ -3620,6 +3620,7 @@ dependencies = [
  "eframe",
  "egui",
  "futures-util",
+ "image",
  "md5",
  "ratatui",
  "regex",

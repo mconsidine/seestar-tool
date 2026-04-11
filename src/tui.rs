@@ -1223,6 +1223,7 @@ fn draw_pem(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
+            Constraint::Length(5), // legal notice
             Constraint::Length(3), // file path
             Constraint::Length(3), // button row
             Constraint::Min(6),    // logs / key preview
@@ -1230,9 +1231,35 @@ fn draw_pem(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
+    let notice = ratatui::widgets::Paragraph::new(vec![
+        ratatui::text::Line::from(ratatui::text::Span::styled(
+            "PEM extraction is provided for interoperability under 17 U.S.C. \u{00a7} 1201(f) \
+             (DMCA interoperability exemption).",
+            Style::default().fg(Color::Gray),
+        )),
+        ratatui::text::Line::from(ratatui::text::Span::styled(
+            "Legality of extraction and use varies by jurisdiction. \
+             You are solely responsible for compliance in your region.",
+            Style::default().fg(Color::Gray),
+        )),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(Span::styled(
+                " Interoperability Notice ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    )
+    .wrap(Wrap { trim: false });
+    f.render_widget(notice, chunks[0]);
+
     draw_text_input(
         f,
-        chunks[0],
+        chunks[1],
         "APK / XAPK Path  [Enter = browse]",
         &app.pem_path,
         app.pem_cursor,
@@ -1242,7 +1269,7 @@ fn draw_pem(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let btn_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
+        .split(chunks[2]);
 
     let extract_style = if app.focus == Focus::PemButton && app.file_browser.is_none() {
         Style::default()
@@ -1296,12 +1323,12 @@ fn draw_pem(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
                     .title("Extracted Key(s)"),
             )
             .wrap(Wrap { trim: false });
-        f.render_widget(key_par, chunks[2]);
+        f.render_widget(key_par, chunks[3]);
     } else {
-        draw_logs(f, app, chunks[2]);
+        draw_logs(f, app, chunks[3]);
     }
 
-    draw_progress(f, app, chunks[3]);
+    draw_progress(f, app, chunks[4]);
 }
 
 fn draw_confirm_dialog(f: &mut ratatui::Frame, app: &mut App, area: Rect) {

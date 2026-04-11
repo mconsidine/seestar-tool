@@ -1,0 +1,331 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (CalVer, e.g. 2026.4.0). Leave empty to auto-increment."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  determine-version:
+    name: Determine Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need tags for version calculation
+
+      - name: Calculate version
+        id: version
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            # Find the latest release tag and increment from it.
+            LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
+            echo "Latest tag version: ${LATEST:-none}"
+
+            NOW_YEAR=$(date +%Y)
+            NOW_MONTH=$(date +%-m)
+
+            if [[ -z "$LATEST" ]]; then
+              # No existing tags — start at YYYY.M.0
+              VERSION="${NOW_YEAR}.${NOW_MONTH}.0"
+            else
+              IFS='.' read -r CUR_YEAR CUR_MONTH CUR_MICRO <<< "$LATEST"
+              if [[ "$CUR_YEAR" == "$NOW_YEAR" && "$CUR_MONTH" == "$NOW_MONTH" ]]; then
+                NEW_MICRO=$((CUR_MICRO + 1))
+                VERSION="${NOW_YEAR}.${NOW_MONTH}.${NEW_MICRO}"
+              else
+                VERSION="${NOW_YEAR}.${NOW_MONTH}.0"
+              fi
+            fi
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION"
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: determine-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: false
+            deb_arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            deb_arch: arm64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update version in Cargo.toml
+        shell: bash
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          sed -i.bak "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          echo "Updated Cargo.toml to version $VERSION"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux' && !matrix.use_cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libssl-dev \
+            libfontconfig1-dev \
+            libgl1-mesa-dev
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+        if: "!matrix.use_cross"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: |
+          curl -fsSL https://github.com/cross-rs/cross/releases/latest/download/cross-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz -C /usr/local/bin
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (native)
+        if: "!matrix.use_cross"
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          RUSTC_WRAPPER: sccache
+
+      # ── Linux: .deb package ──────────────────────────────────────────────────
+
+      - name: Build .deb package
+        if: runner.os == 'Linux'
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          ARCH="${{ matrix.deb_arch }}"
+          PKG="seestar-tool_${VERSION}_${ARCH}"
+
+          mkdir -p "${PKG}/DEBIAN"
+          mkdir -p "${PKG}/usr/bin"
+
+          cp "target/${{ matrix.target }}/release/seestar-tool" "${PKG}/usr/bin/seestar-tool"
+          chmod 755 "${PKG}/usr/bin/seestar-tool"
+
+          # Install hicolor icons at each standard size
+          for size in 16 32 48 64 128 256; do
+            mkdir -p "${PKG}/usr/share/icons/hicolor/${size}x${size}/apps"
+            cp "assets/icons/hicolor/${size}x${size}/seestar-tool.png" \
+               "${PKG}/usr/share/icons/hicolor/${size}x${size}/apps/seestar-tool.png"
+          done
+
+          # Desktop entry so the app appears in application menus
+          mkdir -p "${PKG}/usr/share/applications"
+          cat > "${PKG}/usr/share/applications/seestar-tool.desktop" <<EOF
+          [Desktop Entry]
+          Name=Seestar Tool
+          Comment=Manage firmware on ZWO Seestar telescopes
+          Exec=seestar-tool
+          Icon=seestar-tool
+          Terminal=false
+          Type=Application
+          Categories=Utility;
+          EOF
+          sed -i 's/^          //' "${PKG}/usr/share/applications/seestar-tool.desktop"
+
+          cat > "${PKG}/DEBIAN/control" <<EOF
+          Package: seestar-tool
+          Version: ${VERSION}
+          Architecture: ${ARCH}
+          Maintainer: bguthro <bguthro@users.noreply.github.com>
+          Description: Desktop tool for managing firmware on ZWO Seestar telescopes
+           A native desktop application for installing firmware and extracting
+           TLS private keys from ZWO Seestar smart telescopes.
+          Homepage: https://github.com/bguthro/seestar-tool
+          Section: utils
+          Priority: optional
+          EOF
+
+          # Remove YAML-indent leading whitespace from heredoc
+          sed -i 's/^          //' "${PKG}/DEBIAN/control"
+
+          # Refresh icon cache after install
+          cat > "${PKG}/DEBIAN/postinst" <<'EOF'
+          #!/bin/sh
+          set -e
+          if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -f -t /usr/share/icons/hicolor
+          fi
+          EOF
+          chmod 755 "${PKG}/DEBIAN/postinst"
+
+          dpkg-deb --build --root-owner-group "${PKG}"
+          echo "Built: ${PKG}.deb ($(du -h "${PKG}.deb" | cut -f1))"
+
+      - name: Upload Linux artifacts
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: seestar-tool-${{ matrix.target }}
+          path: |
+            seestar-tool_*_${{ matrix.deb_arch }}.deb
+
+      # ── macOS: .app bundle + .dmg ────────────────────────────────────────────
+
+      - name: Build .app bundle
+        if: runner.os == 'macOS'
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          APP="SeestarTool.app"
+
+          mkdir -p "${APP}/Contents/MacOS"
+          mkdir -p "${APP}/Contents/Resources"
+          cp "target/${{ matrix.target }}/release/seestar-tool" "${APP}/Contents/MacOS/seestar-tool"
+          chmod 755 "${APP}/Contents/MacOS/seestar-tool"
+          cp assets/icons/seestar-tool.icns "${APP}/Contents/Resources/seestar-tool.icns"
+
+          cat > "${APP}/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>seestar-tool</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.bguthro.seestar-tool</string>
+              <key>CFBundleName</key>
+              <string>Seestar Tool</string>
+              <key>CFBundleDisplayName</key>
+              <string>Seestar Tool</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>11.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSSupportsAutomaticGraphicsSwitching</key>
+              <true/>
+              <key>CFBundleIconFile</key>
+              <string>seestar-tool</string>
+          </dict>
+          </plist>
+          EOF
+
+          # Remove YAML-indent leading whitespace from heredoc
+          sed -i '' 's/^          //' "${APP}/Contents/Info.plist"
+
+      - name: Build .dmg
+        if: runner.os == 'macOS'
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          DMG="seestar-tool-${{ matrix.target }}-${VERSION}.dmg"
+
+          mkdir dmg_staging
+          cp -r SeestarTool.app dmg_staging/
+          # Symlink to /Applications for drag-install UX
+          ln -s /Applications dmg_staging/Applications
+
+          hdiutil create \
+            -volname "Seestar Tool ${VERSION}" \
+            -srcfolder dmg_staging \
+            -ov \
+            -format UDZO \
+            "${DMG}"
+
+          echo "Built: ${DMG} ($(du -h "${DMG}" | cut -f1))"
+
+      - name: Upload macOS artifacts
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: seestar-tool-${{ matrix.target }}
+          path: seestar-tool-${{ matrix.target }}-*.dmg
+
+      # ── Windows: .zip ────────────────────────────────────────────────────────
+
+      - name: Build .zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $VERSION = "${{ needs.determine-version.outputs.version }}"
+          $SRC = "target\${{ matrix.target }}\release\seestar-tool.exe"
+          $ZIP = "seestar-tool-${{ matrix.target }}-${VERSION}.zip"
+          # Bundle exe + ico together so users have the icon available
+          Compress-Archive -Path $SRC, "assets\icons\seestar-tool.ico" -DestinationPath $ZIP
+          $size = (Get-Item $ZIP).Length / 1MB
+          Write-Host "Built: $ZIP ($([math]::Round($size, 1)) MB)"
+
+      - name: Upload Windows artifacts
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: seestar-tool-${{ matrix.target }}
+          path: seestar-tool-${{ matrix.target }}-*.zip
+
+  publish-release:
+    name: Publish Release
+    needs: [determine-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir release
+          find artifacts/ -type f \( -name "*.deb" -o -name "*.dmg" -o -name "*.zip" \) \
+            -exec cp {} release/ \;
+          ls -lh release/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            release/*
