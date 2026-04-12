@@ -354,14 +354,16 @@ fn detect_scope_model_on_port(address: &str, port: u16, pem_key: &[u8]) -> Resul
     // Read scope greeting
     let _greeting = recv_line(&mut stream)?;
 
-    // get_verify_str
-    let req = serde_json::json!({"id":1,"method":"get_verify_str","params":[]});
+    // Step 1: get_verify_str — params must be the string "verify"
+    let req = serde_json::json!({"id":1,"method":"get_verify_str","params":"verify"});
     stream.write_all(format!("{}\r\n", req).as_bytes())?;
     let resp = recv_line(&mut stream)?;
     let resp_v: serde_json::Value =
         serde_json::from_str(&resp).map_err(|_| anyhow!("Invalid JSON from scope: {}", resp))?;
+    // result may be {"str":"..."} or just the string directly
     let challenge = resp_v["result"]["str"]
         .as_str()
+        .or_else(|| resp_v["result"].as_str())
         .ok_or_else(|| anyhow!("No challenge string in: {}", resp))?
         .to_string();
 
@@ -373,11 +375,11 @@ fn detect_scope_model_on_port(address: &str, port: u16, pem_key: &[u8]) -> Resul
     let signature = Signer::sign(&signing_key, challenge.as_bytes());
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
 
-    // verify_client
+    // Step 2: verify_client
     let verify_req = serde_json::json!({
         "id": 2,
         "method": "verify_client",
-        "params": [{"sign": sig_b64, "data": challenge}]
+        "params": {"sign": sig_b64, "data": challenge}
     });
     stream.write_all(format!("{}\r\n", verify_req).as_bytes())?;
     let ack = recv_line(&mut stream)?;
@@ -391,8 +393,14 @@ fn detect_scope_model_on_port(address: &str, port: u16, pem_key: &[u8]) -> Resul
         ));
     }
 
+    // Step 3: pi_is_verified — required to complete the handshake
+    let pi_req = serde_json::json!({"id":3,"method":"pi_is_verified","params":"verify"});
+    stream.write_all(format!("{}\r\n", pi_req).as_bytes())?;
+    let _pi_ack = recv_line(&mut stream)?;
+    // Non-zero result is non-fatal (seestar_alp also ignores it)
+
     // get_device_state
-    let state_req = serde_json::json!({"id":3,"method":"get_device_state","params":[]});
+    let state_req = serde_json::json!({"id":4,"method":"get_device_state","params":[]});
     stream.write_all(format!("{}\r\n", state_req).as_bytes())?;
     let state_resp = recv_line(&mut stream)?;
     let state_v: serde_json::Value = serde_json::from_str(&state_resp)
@@ -856,10 +864,14 @@ mod tests {
                 return;
             }
 
-            // 4. Read get_device_state, reply with product_model
+            // 4. Read pi_is_verified, send ack
+            recv_line(&mut conn).unwrap();
+            conn.write_all(b"{\"id\":3,\"code\":0}\r\n").unwrap();
+
+            // 5. Read get_device_state, reply with product_model
             recv_line(&mut conn).unwrap();
             let state = serde_json::json!({
-                "id": 3,
+                "id": 4,
                 "result": {"device": {"product_model": product_model}}
             });
             conn.write_all(format!("{}\r\n", state).as_bytes()).unwrap();
@@ -969,12 +981,14 @@ mod tests {
                 return;
             };
             conn.write_all(b"{\"name\":\"seestar-api\"}\r\n").unwrap();
-            recv_line(&mut conn).unwrap();
+            recv_line(&mut conn).unwrap(); // get_verify_str
             let cr = serde_json::json!({"id":1,"result":{"str":"challenge"}});
             conn.write_all(format!("{}\r\n", cr).as_bytes()).unwrap();
-            recv_line(&mut conn).unwrap();
+            recv_line(&mut conn).unwrap(); // verify_client
             conn.write_all(b"{\"id\":2,\"code\":0}\r\n").unwrap();
-            recv_line(&mut conn).unwrap();
+            recv_line(&mut conn).unwrap(); // pi_is_verified
+            conn.write_all(b"{\"id\":3,\"code\":0}\r\n").unwrap();
+            recv_line(&mut conn).unwrap(); // get_device_state
             conn.write_all(state_json).unwrap();
         });
         addr
