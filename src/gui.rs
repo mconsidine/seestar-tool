@@ -849,6 +849,20 @@ fn draw_firmware(ui: &mut egui::Ui, fw: &mut FirmwareTab) {
                         {
                             fw.start_download();
                         }
+                        let have_download = fw.downloaded_apk.is_some();
+                        if ui
+                            .add_enabled(
+                                have_download && !fw.busy,
+                                secondary_btn("Install downloaded"),
+                            )
+                            .on_hover_text("Switch to Local APK tab with the downloaded file")
+                            .clicked()
+                            && let Some(path) = &fw.downloaded_apk
+                        {
+                            fw.apk_path = path.to_string_lossy().to_string();
+                            fw.source = FirmwareSource::LocalApk;
+                            fw.confirm = Some(PendingAction::InstallApk);
+                        }
                     }
                 }
 
