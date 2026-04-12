@@ -109,7 +109,7 @@ Both are bzip2-compressed tarballs containing the firmware binary and related sy
 
 - Extract and use a raw `iscope` or `iscope_64` file directly
 - Let this tool extract the appropriate variant from an APK/XAPK before uploading
-- Extract it as a reference or for use with other tools (e.g., [seestar-proxy](https://github.com/astrophotograph/seestar-proxy))
+- Extract it as a reference or for use with other tools (e.g., [seestar_alp](https://github.com/smart-underworld/seestar_alp))
 
 ---
 
@@ -134,7 +134,7 @@ Pick a Seestar APK/XAPK and click **Extract PEM Key**. The extracted key can be 
 
 ## Interoperability and Legal Notice (Extract PEM)
 
-PEM key extraction is provided for **interoperability purposes** under 17 U.S.C. § 1201(f) — the DMCA interoperability exemption. That provision permits circumvention of access controls solely to the extent necessary to achieve interoperability of an independently created program with other programs. Extraction of the TLS private key is performed to enable independent software (such as [seestar-proxy](https://github.com/astrophotograph/seestar-proxy)) to interoperate with the Seestar device's local HTTPS API.
+PEM key extraction is provided for **interoperability purposes** under 17 U.S.C. § 1201(f) — the DMCA interoperability exemption. That provision permits circumvention of access controls solely to the extent necessary to achieve interoperability of an independently created program with other programs. Extraction of the TLS private key is performed to enable independent software (such as [seestar_alp](https://github.com/smart-underworld/seestar_alp)) to interoperate with the Seestar device's local HTTPS API.
 
 **The legality of key extraction and use varies by jurisdiction.** The DMCA interoperability exemption applies within the United States. Laws governing reverse engineering, circumvention, and interoperability differ significantly across countries and regions. **You are solely responsible for ensuring that your use of this feature complies with the laws of your region.**
 
