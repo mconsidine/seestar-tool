@@ -235,6 +235,8 @@ struct FirmwareTab {
     pem_rx: Option<Receiver>,
     /// APK path we last started PEM extraction from, to avoid re-extracting.
     last_pem_path: String,
+    /// Directory to save downloaded XAPK files into.
+    download_dir: String,
 }
 
 impl FirmwareTab {
@@ -260,6 +262,11 @@ impl FirmwareTab {
             pem_key: None,
             pem_rx: None,
             last_pem_path: String::new(),
+            download_dir: dirs::download_dir()
+                .or_else(dirs::home_dir)
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
         }
     }
 
@@ -358,9 +365,7 @@ impl FirmwareTab {
         let Some((version, download_url)) = self.resolved_version() else {
             return;
         };
-        let dest_dir = std::env::current_dir()
-            .unwrap_or_default()
-            .join(format!("v{}", version));
+        let dest_dir = PathBuf::from(&self.download_dir);
         let (tx, rx) = channel();
         self.tx = Some(tx.clone());
         self.rx = Some(rx);
@@ -376,9 +381,7 @@ impl FirmwareTab {
             return;
         };
         let host = self.seestar_host.clone();
-        let dest_dir = std::env::current_dir()
-            .unwrap_or_default()
-            .join(format!("v{}", version));
+        let dest_dir = PathBuf::from(&self.download_dir);
         let (tx, rx) = channel();
         self.tx = Some(tx.clone());
         self.rx = Some(rx);
@@ -738,6 +741,24 @@ fn draw_firmware(ui: &mut egui::Ui, fw: &mut FirmwareTab) {
                                 .hint_text("Paste a direct XAPK download URL (optional fallback)")
                                 .desired_width(f32::INFINITY),
                         );
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Save to").color(c_muted()).size(13.0));
+                        let btn_w = 100.0 + ui.spacing().item_spacing.x;
+                        let te_w = (ui.available_width() - btn_w).max(60.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut fw.download_dir)
+                                .hint_text("Folder to save downloaded XAPK")
+                                .desired_width(te_w),
+                        );
+                        if ui.add(secondary_btn("Browse")).clicked()
+                            && let Some(p) = rfd::FileDialog::new()
+                                .set_directory(&fw.download_dir)
+                                .pick_folder()
+                        {
+                            fw.download_dir = p.to_string_lossy().to_string();
+                        }
                     });
                 }
             }
