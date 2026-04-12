@@ -10,6 +10,13 @@ use std::sync::Arc;
 use crate::firmware::ScopeModel;
 use crate::task::{Sender, TaskMsg};
 
+/// Target scope parameters shared by all install operations.
+pub struct InstallTarget {
+    pub host: String,
+    pub model: ScopeModel,
+    pub pem_key: Option<Vec<u8>>,
+}
+
 /// Fetch the Seestar version list from APKPure.
 /// Sends `TaskMsg::VersionList` on success, `TaskMsg::Error` on failure.
 pub fn fetch_versions(rt: &Arc<tokio::runtime::Runtime>, tx: Sender) {
@@ -99,16 +106,13 @@ fn resolve_model(
 }
 
 /// Download an XAPK, extract the firmware, and upload it to the scope.
-#[allow(clippy::too_many_arguments)]
 pub fn download_and_install(
     rt: &Arc<tokio::runtime::Runtime>,
     tx: Sender,
     version: String,
     download_url: String,
     dest_dir: PathBuf,
-    host: String,
-    model: ScopeModel,
-    pem_key: Option<Vec<u8>>,
+    target: InstallTarget,
 ) {
     rt.spawn(async move {
         let prog = {
@@ -129,6 +133,11 @@ pub fn download_and_install(
         let _ = tx.send(TaskMsg::Downloaded(path.clone()));
         let _ = tx.send(TaskMsg::Progress(0, 0));
 
+        let InstallTarget {
+            host,
+            model,
+            pem_key,
+        } = target;
         let tx_ext = tx.clone();
         let tx_log = tx.clone();
         let tx_up = tx.clone();
@@ -170,11 +179,14 @@ pub fn install_apk(
     rt: &Arc<tokio::runtime::Runtime>,
     tx: Sender,
     apk_path: String,
-    host: String,
-    model: ScopeModel,
-    pem_key: Option<Vec<u8>>,
+    target: InstallTarget,
 ) {
     rt.spawn(async move {
+        let InstallTarget {
+            host,
+            model,
+            pem_key,
+        } = target;
         let tx_ext = tx.clone();
         let tx_log = tx.clone();
         let tx_up = tx.clone();
@@ -212,13 +224,16 @@ pub fn install_iscope(
     rt: &Arc<tokio::runtime::Runtime>,
     tx: Sender,
     iscope_path: String,
-    host: String,
-    model: ScopeModel,
-    pem_key: Option<Vec<u8>>,
+    target: InstallTarget,
 ) {
     rt.spawn(async move {
         let tx_done = tx.clone();
         let result = tokio::task::spawn_blocking(move || {
+            let InstallTarget {
+                host,
+                model,
+                pem_key,
+            } = target;
             let tx_log = tx.clone();
             let tx_up = tx.clone();
             let model = resolve_model(model, &host, pem_key.as_deref(), &tx_log)?;

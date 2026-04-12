@@ -392,9 +392,11 @@ impl FirmwareTab {
             version,
             download_url,
             dest_dir,
-            host,
-            self.model,
-            self.pem_key.clone(),
+            crate::runner::InstallTarget {
+                host,
+                model: self.model,
+                pem_key: self.pem_key.clone(),
+            },
         );
     }
 
@@ -409,9 +411,11 @@ impl FirmwareTab {
             &self.rt,
             tx,
             self.apk_path.clone(),
-            self.seestar_host.clone(),
-            self.model,
-            self.pem_key.clone(),
+            crate::runner::InstallTarget {
+                host: self.seestar_host.clone(),
+                model: self.model,
+                pem_key: self.pem_key.clone(),
+            },
         );
     }
 
@@ -426,9 +430,11 @@ impl FirmwareTab {
             &self.rt,
             tx,
             self.iscope_path.clone(),
-            self.seestar_host.clone(),
-            self.model,
-            self.pem_key.clone(),
+            crate::runner::InstallTarget {
+                host: self.seestar_host.clone(),
+                model: self.model,
+                pem_key: self.pem_key.clone(),
+            },
         );
     }
 }

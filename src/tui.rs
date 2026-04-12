@@ -620,9 +620,11 @@ impl App {
                     &self.rt,
                     tx,
                     path,
-                    self.host.trim().to_string(),
-                    self.fw_model,
-                    self.pem_key.clone(),
+                    crate::runner::InstallTarget {
+                        host: self.host.trim().to_string(),
+                        model: self.fw_model,
+                        pem_key: self.pem_key.clone(),
+                    },
                 );
             }
             ConfirmAction::InstallIscope(path) => {
@@ -634,9 +636,11 @@ impl App {
                     &self.rt,
                     tx,
                     path,
-                    self.host.trim().to_string(),
-                    self.fw_model,
-                    self.pem_key.clone(),
+                    crate::runner::InstallTarget {
+                        host: self.host.trim().to_string(),
+                        model: self.fw_model,
+                        pem_key: self.pem_key.clone(),
+                    },
                 );
             }
             ConfirmAction::DownloadAndInstall {
@@ -655,9 +659,11 @@ impl App {
                     version,
                     url,
                     dest,
-                    host,
-                    self.fw_model,
-                    self.pem_key.clone(),
+                    crate::runner::InstallTarget {
+                        host,
+                        model: self.fw_model,
+                        pem_key: self.pem_key.clone(),
+                    },
                 );
             }
         }
