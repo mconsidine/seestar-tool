@@ -318,6 +318,20 @@ pub fn detect_scope_model(address: &str, pem_key: &[u8]) -> Result<ScopeModel> {
     detect_scope_model_on_port(address, API_PORT, pem_key)
 }
 
+fn send_udp_intro(address: &str) {
+    use std::net::UdpSocket;
+    let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else {
+        return;
+    };
+    let _ = sock.set_broadcast(true);
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(1)));
+    let msg = serde_json::json!({"id":1,"method":"scan_iscope","params":""});
+    let _ = sock.send_to(msg.to_string().as_bytes(), (address, 4720u16));
+    // Drain any response to ensure the scope registers the intro
+    let mut buf = [0u8; 1024];
+    while sock.recv_from(&mut buf).is_ok() {}
+}
+
 fn detect_scope_model_on_port(address: &str, port: u16, pem_key: &[u8]) -> Result<ScopeModel> {
     use base64::Engine;
     use rsa::pkcs1v15::SigningKey;
@@ -326,6 +340,9 @@ fn detect_scope_model_on_port(address: &str, port: u16, pem_key: &[u8]) -> Resul
     use sha1::Sha1;
     use std::io::Write;
     use std::net::ToSocketAddrs;
+
+    // The scope requires a UDP intro before it will accept TCP connections.
+    send_udp_intro(address);
 
     let addr = (address, port)
         .to_socket_addrs()?
@@ -577,17 +594,24 @@ mod tests {
         assert!(err.to_string().contains("Cannot connect"));
     }
 
-    // ── upload_firmware_to_ports ──────────────────────────────────────────────
+    // ── upload_firmware_inner ─────────────────────────────────────────────────
+
+    fn test_ports(cmd_port: u16, data_port: u16) -> UploadPorts {
+        UploadPorts {
+            cmd_port,
+            data_port,
+            wait_timeout: Duration::from_secs(5),
+        }
+    }
 
     #[test]
     fn upload_firmware_cannot_connect_to_data_port() {
         // Neither port has a listener.
-        let err = upload_firmware_to_ports(
+        let err = upload_firmware_inner(
             "127.0.0.1",
             b"data",
             "iscope",
-            9, // cmd port — won't be reached
-            9, // data port — nothing listening (port 9 = discard, always refused)
+            test_ports(9, 9), // port 9 = discard, always refused
             |_| {},
             |_, _| {},
         )
@@ -609,12 +633,11 @@ mod tests {
             l.local_addr().unwrap().port()
         };
 
-        let err = upload_firmware_to_ports(
+        let err = upload_firmware_inner(
             "127.0.0.1",
             b"data",
             "iscope",
-            dead_port,
-            data_port,
+            test_ports(dead_port, data_port),
             |_| {},
             |_, _| {},
         )
@@ -646,12 +669,11 @@ mod tests {
             }
         });
 
-        let err = upload_firmware_to_ports(
+        let err = upload_firmware_inner(
             "127.0.0.1",
             b"firmware",
             "iscope",
-            cmd_port,
-            data_port,
+            test_ports(cmd_port, data_port),
             |_| {},
             |_, _| {},
         )
