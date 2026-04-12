@@ -358,11 +358,8 @@ fn detect_scope_model_on_port(
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     log("Connected".to_string());
 
-    // Read scope greeting
-    let greeting = recv_line(&mut stream)?;
-    log(format!("Greeting: {}", greeting));
-
     // Step 1: get_verify_str — params must be the string "verify"
+    // (port 4700 does not send a greeting on connect, unlike port 4350)
     let req = serde_json::json!({"id":1,"method":"get_verify_str","params":"verify"});
     log(format!("-> {}", req));
     stream.write_all(format!("{}\r\n", req).as_bytes())?;
@@ -865,7 +862,6 @@ mod tests {
                 return;
             };
             // 1. Send greeting
-            conn.write_all(b"{\"name\":\"seestar-api\"}\r\n").unwrap();
 
             // 2. Read get_verify_str, reply with challenge
             recv_line(&mut conn).unwrap();
@@ -985,7 +981,7 @@ mod tests {
             let Ok((mut conn, _)) = listener.accept() else {
                 return;
             };
-            conn.write_all(b"{\"name\":\"seestar-api\"}\r\n").unwrap();
+
             recv_line(&mut conn).unwrap(); // consume get_verify_str
             conn.write_all(challenge_json).unwrap();
         });
@@ -1001,7 +997,7 @@ mod tests {
             let Ok((mut conn, _)) = listener.accept() else {
                 return;
             };
-            conn.write_all(b"{\"name\":\"seestar-api\"}\r\n").unwrap();
+
             recv_line(&mut conn).unwrap(); // get_verify_str
             let cr = serde_json::json!({"id":1,"result":{"str":"challenge"}});
             conn.write_all(format!("{}\r\n", cr).as_bytes()).unwrap();
