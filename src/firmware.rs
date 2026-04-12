@@ -307,28 +307,16 @@ pub(crate) fn recv_line(stream: &mut TcpStream) -> Result<String> {
 
 // ── Model auto-detection ──────────────────────────────────────────────────────
 
-/// Connect to the scope's JSON-RPC API on port 4350 (the OTA updater port,
-/// always accessible), authenticate with RSA SHA1/PKCS1v15 challenge-response,
-/// and read `product_model` from `get_device_state`.
+const API_PORT: u16 = 4700;
+
+/// Connect to the scope's JSON-RPC API on port 4700, authenticate with
+/// RSA SHA1/PKCS1v15 challenge-response, and read `product_model` from
+/// `get_device_state`.
 ///
 /// Returns `ScopeModel::S30Pro` if the product_model contains "S30",
 /// otherwise `ScopeModel::S50`.
 pub fn detect_scope_model(address: &str, pem_key: &[u8]) -> Result<ScopeModel> {
-    detect_scope_model_on_port(address, UPDATER_CMD_PORT, pem_key)
-}
-
-fn send_udp_intro(address: &str) {
-    use std::net::UdpSocket;
-    let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else {
-        return;
-    };
-    let _ = sock.set_broadcast(true);
-    let _ = sock.set_read_timeout(Some(Duration::from_secs(1)));
-    let msg = serde_json::json!({"id":1,"method":"scan_iscope","params":""});
-    let _ = sock.send_to(msg.to_string().as_bytes(), (address, 4720u16));
-    // Drain any response to ensure the scope registers the intro
-    let mut buf = [0u8; 1024];
-    while sock.recv_from(&mut buf).is_ok() {}
+    detect_scope_model_on_port(address, API_PORT, pem_key)
 }
 
 fn detect_scope_model_on_port(address: &str, port: u16, pem_key: &[u8]) -> Result<ScopeModel> {
@@ -339,9 +327,6 @@ fn detect_scope_model_on_port(address: &str, port: u16, pem_key: &[u8]) -> Resul
     use sha1::Sha1;
     use std::io::Write;
     use std::net::ToSocketAddrs;
-
-    // The scope requires a UDP intro before it will accept TCP connections.
-    send_udp_intro(address);
 
     let addr = (address, port)
         .to_socket_addrs()?
@@ -951,7 +936,7 @@ mod tests {
     fn detect_scope_model_invalid_address_returns_error() {
         let pem = make_test_pem_key();
         let err =
-            detect_scope_model_on_port("this-host-does-not-exist.invalid", 4350, &pem).unwrap_err();
+            detect_scope_model_on_port("this-host-does-not-exist.invalid", 4700, &pem).unwrap_err();
         assert!(!err.to_string().is_empty());
     }
 
