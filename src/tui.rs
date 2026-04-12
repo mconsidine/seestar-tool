@@ -48,6 +48,7 @@ enum Focus {
     SourceTabs,
     FilePath,
     Host,
+    ModelTabs,
     VersionList,
     ActionButton,
     DownloadButton,
@@ -288,6 +289,7 @@ impl FileBrowser {
 struct App {
     tab: Tab,
     fw_source: FirmwareSource,
+    fw_model: crate::firmware::ScopeModel,
     focus: Focus,
 
     // firmware tab
@@ -332,6 +334,7 @@ impl App {
         let mut app = Self {
             tab: Tab::Firmware,
             fw_source: FirmwareSource::LocalApk,
+            fw_model: crate::firmware::ScopeModel::default(),
             focus: Focus::FilePath,
             apk_path: String::new(),
             iscope_path: String::new(),
@@ -577,14 +580,26 @@ impl App {
                 self.rx = rx;
                 self.busy = true;
                 self.progress = Some((0, 0));
-                crate::runner::install_apk(&self.rt, tx, path, self.host.trim().to_string());
+                crate::runner::install_apk(
+                    &self.rt,
+                    tx,
+                    path,
+                    self.host.trim().to_string(),
+                    self.fw_model,
+                );
             }
             ConfirmAction::InstallIscope(path) => {
                 let (tx, rx) = task::channel();
                 self.rx = rx;
                 self.busy = true;
                 self.progress = Some((0, 0));
-                crate::runner::install_iscope(&self.rt, tx, path, self.host.trim().to_string());
+                crate::runner::install_iscope(
+                    &self.rt,
+                    tx,
+                    path,
+                    self.host.trim().to_string(),
+                    self.fw_model,
+                );
             }
             ConfirmAction::DownloadAndInstall {
                 version,
@@ -596,7 +611,15 @@ impl App {
                 self.rx = rx;
                 self.busy = true;
                 self.progress = Some((0, 0));
-                crate::runner::download_and_install(&self.rt, tx, version, url, dest, host);
+                crate::runner::download_and_install(
+                    &self.rt,
+                    tx,
+                    version,
+                    url,
+                    dest,
+                    host,
+                    self.fw_model,
+                );
             }
         }
     }
@@ -859,7 +882,18 @@ impl App {
                         self.host_cursor += 1;
                     }
                 }
+                KeyCode::Tab => self.focus = Focus::ModelTabs,
+                _ => {}
+            },
+            Focus::ModelTabs => match code {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    self.fw_model = crate::firmware::ScopeModel::S50;
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    self.fw_model = crate::firmware::ScopeModel::S30Pro;
+                }
                 KeyCode::Tab => self.focus = Focus::ActionButton,
+                KeyCode::BackTab => self.focus = Focus::Host,
                 _ => {}
             },
             Focus::ActionButton => match code {
@@ -871,7 +905,7 @@ impl App {
                         self.focus = Focus::Logs;
                     }
                 }
-                KeyCode::BackTab => self.focus = Focus::Host,
+                KeyCode::BackTab => self.focus = Focus::ModelTabs,
                 _ => {}
             },
             Focus::DownloadButton => match code {
@@ -1029,6 +1063,7 @@ fn draw_firmware(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
             Constraint::Length(3), // file path OR version list header
             Constraint::Min(4),    // version list (only for Download)
             Constraint::Length(3), // host
+            Constraint::Length(3), // model picker
             Constraint::Length(3), // action button
             Constraint::Min(6),    // logs
             Constraint::Length(3), // progress
@@ -1140,13 +1175,40 @@ fn draw_firmware(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         app.focus == Focus::Host && app.file_browser.is_none(),
     );
 
+    // ── model picker ─────────────────────────────────────────────────────────
+    let model_focused = app.focus == Focus::ModelTabs && app.file_browser.is_none();
+    let model_style = if model_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let model_idx = match app.fw_model {
+        crate::firmware::ScopeModel::S50 => 0,
+        crate::firmware::ScopeModel::S30Pro => 1,
+    };
+    let model_tabs = Tabs::new(vec![Line::from("S50"), Line::from("S30 / S30 Pro")])
+        .select(model_idx)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Model  [←/→ to switch]")
+                .style(model_style),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(model_style);
+    f.render_widget(model_tabs, chunks[4]);
+
     // ── action button(s) ─────────────────────────────────────────────────────
     if app.fw_source == FirmwareSource::Download && !app.host.trim().is_empty() {
         // Show two buttons side by side: Download & Install | Download Only
         let btn_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[4]);
+            .split(chunks[5]);
 
         let install_style = if app.focus == Focus::ActionButton && app.file_browser.is_none() {
             Style::default()
@@ -1210,12 +1272,12 @@ fn draw_firmware(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 .alignment(Alignment::Center)
                 .style(btn_style)
                 .block(Block::default().borders(Borders::ALL)),
-            chunks[4],
+            chunks[5],
         );
     }
 
-    draw_logs(f, app, chunks[5]);
-    draw_progress(f, app, chunks[6]);
+    draw_logs(f, app, chunks[6]);
+    draw_progress(f, app, chunks[7]);
 }
 
 fn draw_pem(f: &mut ratatui::Frame, app: &mut App, area: Rect) {

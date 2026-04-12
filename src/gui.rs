@@ -6,6 +6,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Rounding, Stroke};
 
 use crate::apkpure::ApkVersion;
+use crate::firmware::ScopeModel;
 use crate::task::{Receiver, Sender, TaskMsg, channel};
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -210,6 +211,7 @@ enum PendingAction {
 
 struct FirmwareTab {
     source: FirmwareSource,
+    model: ScopeModel,
     apk_path: String,
     iscope_path: String,
     seestar_host: String,
@@ -233,6 +235,7 @@ impl FirmwareTab {
     fn new(rt: Arc<tokio::runtime::Runtime>) -> Self {
         Self {
             source: FirmwareSource::default(),
+            model: ScopeModel::default(),
             apk_path: String::new(),
             iscope_path: String::new(),
             seestar_host: "seestar.local".to_string(),
@@ -342,7 +345,15 @@ impl FirmwareTab {
         self.log.clear();
         self.downloaded_apk = None;
         self.progress = (0, 0);
-        crate::runner::download_and_install(&self.rt, tx, version, download_url, dest_dir, host);
+        crate::runner::download_and_install(
+            &self.rt,
+            tx,
+            version,
+            download_url,
+            dest_dir,
+            host,
+            self.model,
+        );
     }
 
     fn start_install_apk(&mut self) {
@@ -357,6 +368,7 @@ impl FirmwareTab {
             tx,
             self.apk_path.clone(),
             self.seestar_host.clone(),
+            self.model,
         );
     }
 
@@ -372,6 +384,7 @@ impl FirmwareTab {
             tx,
             self.iscope_path.clone(),
             self.seestar_host.clone(),
+            self.model,
         );
     }
 }
@@ -698,6 +711,14 @@ fn draw_firmware(ui: &mut egui::Ui, fw: &mut FirmwareTab) {
                 );
             });
 
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Model").color(c_muted()).size(13.0));
+                source_btn(ui, &mut fw.model, ScopeModel::S50, "S50");
+                source_btn(ui, &mut fw.model, ScopeModel::S30Pro, "S30 / S30 Pro");
+            });
+
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
@@ -815,10 +836,7 @@ fn draw_firmware(ui: &mut egui::Ui, fw: &mut FirmwareTab) {
     });
 }
 
-fn source_btn(ui: &mut egui::Ui, current: &mut FirmwareSource, variant: FirmwareSource, label: &str)
-where
-    FirmwareSource: PartialEq,
-{
+fn source_btn<T: PartialEq>(ui: &mut egui::Ui, current: &mut T, variant: T, label: &str) {
     let active = *current == variant;
     let fill = if active { c_accent_dim() } else { c_surface2() };
     let text_color = if active { Color32::WHITE } else { c_muted() };

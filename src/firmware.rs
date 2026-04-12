@@ -10,30 +10,58 @@ use crate::apk::open_apk;
 
 const UPDATER_CMD_PORT: u16 = 4350;
 const UPDATER_DATA_PORT: u16 = 4361;
-const ISCOPE_ASSETS: &[&str] = &["assets/iscope", "assets/iscope_64"];
 /// Typical time for the scope to install firmware before rebooting.
 const INSTALL_ESTIMATE_SECS: u64 = 180;
 
+/// Which Seestar model is being updated — determines the firmware binary variant.
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
+pub enum ScopeModel {
+    /// S50 and earlier — uses the 32-bit `iscope` binary.
+    #[default]
+    S50,
+    /// S30 and S30 Pro — uses the 64-bit `iscope_64` binary.
+    S30Pro,
+}
+
+impl ScopeModel {
+    /// The APK asset path for this model's firmware binary.
+    pub fn asset_name(self) -> &'static str {
+        match self {
+            ScopeModel::S50 => "assets/iscope",
+            ScopeModel::S30Pro => "assets/iscope_64",
+        }
+    }
+
+    /// The filename sent to the scope's OTA updater.
+    pub fn remote_filename(self) -> &'static str {
+        match self {
+            ScopeModel::S50 => "iscope",
+            ScopeModel::S30Pro => "iscope_64",
+        }
+    }
+}
+
 // ── iscope extraction ─────────────────────────────────────────────────────────
 
-/// Extract `assets/iscope` bytes from an APK or XAPK file.
+/// Extract the firmware binary for `model` from an APK or XAPK file.
 /// Searches all split APKs for the asset when dealing with an XAPK.
-pub fn extract_iscope(apk_path: &str, progress: impl Fn(String)) -> Result<Vec<u8>> {
+pub fn extract_iscope(
+    apk_path: &str,
+    model: ScopeModel,
+    progress: impl Fn(String),
+) -> Result<Vec<u8>> {
+    let asset = model.asset_name();
     progress("Opening APK…".to_string());
-    let handle = open_apk(apk_path, ISCOPE_ASSETS)?;
+    let handle = open_apk(apk_path, &[asset])?;
 
     if !handle.split_name.is_empty() {
         progress(format!("Using split APK: {}", handle.split_name));
     }
 
-    let names = handle.file_names()?;
-    let asset = ISCOPE_ASSETS
-        .iter()
-        .find(|a| names.contains(&a.to_string()))
-        .ok_or_else(|| anyhow!("assets/iscope not found in APK"))?;
-
     progress(format!("Extracting {}…", asset));
-    let data = handle.read(asset)?;
+    let data = handle
+        .read(asset)
+        .map_err(|_| anyhow!("{} not found in APK", asset))?;
     progress(format!("Extracted {} ({} MB)", asset, data.len() >> 20));
     Ok(data)
 }
@@ -129,12 +157,18 @@ pub fn upload_firmware(
 pub fn upload_firmware_file(
     address: &str,
     path: &Path,
-    remote_filename: &str,
+    model: ScopeModel,
     progress: impl Fn(String) + Send + 'static,
     upload_progress: impl Fn(u64, u64) + Send + 'static,
 ) -> Result<()> {
     let data = std::fs::read(path)?;
-    upload_firmware(address, &data, remote_filename, progress, upload_progress)
+    upload_firmware(
+        address,
+        &data,
+        model.remote_filename(),
+        progress,
+        upload_progress,
+    )
 }
 
 // ── Scope availability polling ────────────────────────────────────────────────

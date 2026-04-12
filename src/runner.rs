@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::firmware::ScopeModel;
 use crate::task::{Sender, TaskMsg};
 
 /// Fetch the Seestar version list from APKPure.
@@ -75,6 +76,7 @@ pub fn download_and_install(
     download_url: String,
     dest_dir: PathBuf,
     host: String,
+    model: ScopeModel,
 ) {
     rt.spawn(async move {
         let prog = {
@@ -99,17 +101,20 @@ pub fn download_and_install(
         let tx_log = tx.clone();
         let tx_up = tx.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let iscope =
-                crate::firmware::extract_iscope(path.to_str().unwrap_or_default(), move |s| {
+            let iscope = crate::firmware::extract_iscope(
+                path.to_str().unwrap_or_default(),
+                model,
+                move |s| {
                     let _ = tx_ext.send(TaskMsg::Log(s));
-                })?;
+                },
+            )?;
             let log = move |s: String| {
                 let _ = tx_log.send(TaskMsg::Log(s));
             };
             let up = move |d, t| {
                 let _ = tx_up.send(TaskMsg::Progress(d, t));
             };
-            crate::firmware::upload_firmware(&host, &iscope, "iscope", log, up)
+            crate::firmware::upload_firmware(&host, &iscope, model.remote_filename(), log, up)
         })
         .await;
 
@@ -128,13 +133,19 @@ pub fn download_and_install(
 }
 
 /// Extract the firmware from a local APK/XAPK and upload it to the scope.
-pub fn install_apk(rt: &Arc<tokio::runtime::Runtime>, tx: Sender, apk_path: String, host: String) {
+pub fn install_apk(
+    rt: &Arc<tokio::runtime::Runtime>,
+    tx: Sender,
+    apk_path: String,
+    host: String,
+    model: ScopeModel,
+) {
     rt.spawn(async move {
         let tx_ext = tx.clone();
         let tx_log = tx.clone();
         let tx_up = tx.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let iscope = crate::firmware::extract_iscope(&apk_path, move |s| {
+            let iscope = crate::firmware::extract_iscope(&apk_path, model, move |s| {
                 let _ = tx_ext.send(TaskMsg::Log(s));
             })?;
             let log = move |s: String| {
@@ -143,7 +154,7 @@ pub fn install_apk(rt: &Arc<tokio::runtime::Runtime>, tx: Sender, apk_path: Stri
             let up = move |d, t| {
                 let _ = tx_up.send(TaskMsg::Progress(d, t));
             };
-            crate::firmware::upload_firmware(&host, &iscope, "iscope", log, up)
+            crate::firmware::upload_firmware(&host, &iscope, model.remote_filename(), log, up)
         })
         .await;
 
@@ -167,6 +178,7 @@ pub fn install_iscope(
     tx: Sender,
     iscope_path: String,
     host: String,
+    model: ScopeModel,
 ) {
     rt.spawn(async move {
         let tx_done = tx.clone();
@@ -179,7 +191,7 @@ pub fn install_iscope(
             let up = move |d, t| {
                 let _ = tx_up.send(TaskMsg::Progress(d, t));
             };
-            crate::firmware::upload_firmware_file(&host, Path::new(&iscope_path), "iscope", log, up)
+            crate::firmware::upload_firmware_file(&host, Path::new(&iscope_path), model, log, up)
         })
         .await;
 
