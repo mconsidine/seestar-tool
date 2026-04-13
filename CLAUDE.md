@@ -55,6 +55,23 @@ Do not suppress lints with `#[allow(...)]` unless there is a concrete, documente
 
 ---
 
+## GUI / TUI feature parity
+
+Every user-facing feature **must be implemented in both interfaces**. `gui.rs` (egui) and
+`tui.rs` (ratatui) are parallel front-ends over the same backend logic in `runner.rs`.
+A feature is not complete until it works in both.
+
+This applies to:
+- New operations (e.g., a new firmware source, a new scope action)
+- New user-configurable inputs or options
+- New status/progress feedback shown during a task
+- New confirmation dialogs or warnings
+
+When adding a feature, implement the GUI side and the TUI side in the same commit (or PR).
+Do not merge a GUI-only or TUI-only implementation.
+
+---
+
 ## Source layout
 
 | File | Responsibility |
