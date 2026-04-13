@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use crate::apk::open_apk;
 
-const UPDATER_CMD_PORT: u16 = 4350;
-const UPDATER_DATA_PORT: u16 = 4361;
+pub const UPDATER_CMD_PORT: u16 = 4350;
+pub const UPDATER_DATA_PORT: u16 = 4361;
 /// Typical time for the scope to install firmware before rebooting.
 const INSTALL_ESTIMATE_SECS: u64 = 180;
 
@@ -406,7 +406,14 @@ fn upload_firmware_inner(
 
     progress("Firmware uploaded — scope is installing…".to_string());
     upload_progress(0, 0); // reset upload bar before wait phase
-    wait_for_scope(address, cmd_port, wait_timeout, progress, upload_progress)?;
+    let _fw_ver = wait_for_scope(
+        address,
+        cmd_port,
+        wait_timeout,
+        None,
+        progress,
+        upload_progress,
+    )?;
     Ok(())
 }
 
@@ -449,32 +456,95 @@ fn upload_firmware_file_inner(
 
 // ── Scope availability polling ────────────────────────────────────────────────
 
+/// Query the scope's firmware version by connecting to the API port.
+/// Used for post-installation verification to confirm firmware actually updated.
+pub(crate) fn query_firmware_version(address: &str, pem_key: &[u8]) -> Result<Option<String>> {
+    detect_scope_model_on_port(address, API_PORT, pem_key, |_| {})
+        .map(|info| info.firmware_ver_string)
+}
+
+/// Check network connectivity to both command and data ports before firmware install.
+/// Returns `Err` with actionable guidance if either port is unreachable.
+pub(crate) fn preflight_network_check(address: &str, cmd_port: u16, data_port: u16) -> Result<()> {
+    use std::time::Instant;
+    let start = Instant::now();
+
+    // Check command port
+    if !can_connect(address, cmd_port) {
+        return Err(anyhow!(
+            "Cannot connect to {}:{} (command port). \
+             Verify: 1) Scope is powered on, 2) Network is connected, 3) Firewall allows connection.",
+            address,
+            cmd_port
+        ));
+    }
+
+    // Check data port
+    if !can_connect(address, data_port) {
+        return Err(anyhow!(
+            "Cannot connect to {}:{} (data port). \
+             Verify: 1) Scope is powered on, 2) Network is connected, 3) Firewall allows connection.",
+            address,
+            data_port
+        ));
+    }
+
+    let elapsed = start.elapsed();
+    if elapsed.as_millis() > 500 {
+        eprintln!(
+            "⚠️  Network connection is slow ({}ms). Install may timeout if connection degrades.",
+            elapsed.as_millis()
+        );
+    }
+    Ok(())
+}
+
 /// Wait for the scope to go offline (reboot) and come back online.
+/// Also queries and verifies the firmware version after coming back online.
+/// Returns the new firmware version if available.
 ///
 /// `install_progress(done, total)` drives the egui progress bar:
 ///   - `(elapsed, INSTALL_ESTIMATE_SECS)` → countdown bar during install
 ///   - `(0, 0)` → indeterminate/bounce bar while rebooting or over-estimate
+///
+/// Returns the firmware version string if available after coming back online.
 pub(crate) fn wait_for_scope(
     address: &str,
     port: u16,
     timeout: Duration,
+    pem_key: Option<&[u8]>,
     mut progress: impl FnMut(String),
     mut install_progress: impl FnMut(u64, u64),
-) -> Result<()> {
+) -> Result<Option<String>> {
     let deadline = Instant::now() + timeout;
     let t0 = Instant::now();
 
     // Phase 1: countdown bar while scope installs; switch to indeterminate once
     // the estimate is exceeded.  Break when scope goes offline (reboot starts).
-    progress("Installing firmware…".to_string());
+    // Include "DO NOT POWER OFF" warning.
+    progress("⚠️  Installation in progress — DO NOT power off the scope".to_string());
+    let mut warned_once = false;
     loop {
         if Instant::now() >= deadline {
-            return Err(anyhow!("Timed out waiting for scope to reboot"));
+            return Err(anyhow!(
+                "Timed out waiting for scope to reboot ({}s). \
+                 The installation may still be in progress. \
+                 IMPORTANT: Do not power off the scope yet. \
+                 Try rebooting the scope manually if it doesn't come back within a few minutes.",
+                timeout.as_secs()
+            ));
         }
         if !can_connect(address, port) {
-            progress("Scope is rebooting…".to_string());
+            progress("🔄 Scope is rebooting — please wait…".to_string());
             install_progress(0, 0);
             break;
+        }
+        // Repeat warning every ~2 seconds
+        if t0.elapsed().as_secs().is_multiple_of(2) && !warned_once {
+            progress("⚠️  Installation in progress — DO NOT power off the scope".to_string());
+            warned_once = true;
+        } else if !t0.elapsed().as_secs().is_multiple_of(2) {
+            warned_once = false;
         }
         let elapsed = t0.elapsed().as_secs();
         if elapsed < INSTALL_ESTIMATE_SECS {
@@ -487,18 +557,50 @@ pub(crate) fn wait_for_scope(
 
     // Phase 2: indeterminate bar while scope reboots and comes back online.
     // Try to actually connect and read greeting to ensure scope is fully ready.
+    progress("⏳ Waiting for scope to come back online…".to_string());
     loop {
-        if Instant::now() >= deadline {
-            return Err(anyhow!("Timed out waiting for scope to come back online"));
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(anyhow!(
+                "Timed out waiting for scope to come back online after {}s. \
+                 This may indicate a failed installation. \
+                 VERIFICATION NEEDED: Manually check the scope's firmware version. \
+                 If it hasn't updated, you may need to reinstall.",
+                timeout.as_secs()
+            ));
         }
         // Try to connect and read greeting message (scope is ready once it sends this).
         if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", address, port)) {
             stream.set_read_timeout(Some(Duration::from_millis(500)))?;
             if recv_line(&mut stream).is_ok() {
                 let elapsed = t0.elapsed().as_secs();
-                progress(format!("Scope is back online! ({elapsed}s)"));
+                progress(format!("✓ Scope is back online! ({elapsed}s)"));
                 install_progress(0, 0);
-                return Ok(());
+
+                // Phase 3: Query firmware version to verify installation succeeded.
+                if let Some(key) = pem_key {
+                    progress("Verifying firmware version…".to_string());
+                    match query_firmware_version(address, key) {
+                        Ok(fw_ver) => {
+                            if let Some(ref ver) = fw_ver {
+                                progress(format!("✓ Firmware verified: {}", ver));
+                            }
+                            return Ok(fw_ver);
+                        }
+                        Err(e) => {
+                            // Don't fail — firmware is installed, just couldn't verify
+                            progress(format!(
+                                "⚠️  Could not verify firmware version: {}. \
+                                 The installation appears successful but verification failed. \
+                                 Please check manually.",
+                                e
+                            ));
+                            return Ok(None);
+                        }
+                    }
+                } else {
+                    return Ok(None);
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -1240,6 +1342,7 @@ mod tests {
             "127.0.0.1",
             port,
             Duration::from_millis(50),
+            None,
             |_| {},
             |_, _| {},
         )
@@ -1262,6 +1365,7 @@ mod tests {
             "127.0.0.1",
             dead_port,
             Duration::from_millis(50),
+            None,
             |_| {},
             |_, _| {},
         )
@@ -1613,7 +1717,14 @@ mod tests {
             drop(new_l);
         });
 
-        let result = wait_for_scope("127.0.0.1", port, Duration::from_secs(5), |_| {}, |_, _| {});
+        let result = wait_for_scope(
+            "127.0.0.1",
+            port,
+            Duration::from_secs(5),
+            None,
+            |_| {},
+            |_, _| {},
+        );
         assert!(result.is_ok());
     }
 

@@ -667,46 +667,6 @@ impl eframe::App for SeestarApp {
                     "This will download firmware from APKPure and upload it to your Seestar."
                 }
             };
-            let body = if let Some(ref info) = self.fw.detected_model {
-                let fw_line = info
-                    .firmware_ver_string
-                    .as_deref()
-                    .map(|v| format!("\nCurrent firmware:     {}", v))
-                    .unwrap_or_default();
-                let battery_line = match info.battery_capacity {
-                    Some(pct) => {
-                        let status = if info.battery_charging {
-                            " (charging)".to_string()
-                        } else if pct < 50 {
-                            " ⚠ low — consider charging first".to_string()
-                        } else {
-                            String::new()
-                        };
-                        format!("\nBattery:              {}%{}", pct, status)
-                    }
-                    None => String::new(),
-                };
-                format!(
-                    "Auto-detected model:  {} — {}{}{}\n\n\
-                     Does this match your scope?\n\
-                     If unsure, cancel and select the model manually.\n\n\
-                     {}\n\
-                     The scope will reboot during installation.\n\n\
-                     Ensure the scope is fully charged and your network is stable.",
-                    info.model.display_name(),
-                    info.model.bitness_description(),
-                    fw_line,
-                    battery_line,
-                    base,
-                )
-            } else {
-                format!(
-                    "{}\n\
-                     The scope will reboot during installation.\n\n\
-                     Ensure the scope is fully charged and your network is stable.",
-                    base,
-                )
-            };
 
             let mut open = true;
             let dlg_frame = egui::Frame::window(&ctx.style())
@@ -720,7 +680,117 @@ impl eframe::App for SeestarApp {
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new(&body).color(c_text()));
+                    // Render dialog with colored sections
+                    if let Some(ref info) = self.fw.detected_model {
+                        // Red brick warning
+                        ui.label(
+                            egui::RichText::new("🔴 INSTALLING WRONG FIRMWARE WILL")
+                                .color(egui::Color32::from_rgb(255, 59, 48))
+                                .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new("PERMANENTLY BRICK YOUR SCOPE 🔴")
+                                .color(egui::Color32::from_rgb(255, 59, 48))
+                                .strong(),
+                        );
+                        ui.add_space(8.0);
+
+                        // Model info
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Auto-detected model:").color(c_text()));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} — {}",
+                                    info.model.display_name(),
+                                    info.model.bitness_description()
+                                ))
+                                .color(c_text())
+                                .strong(),
+                            );
+                        });
+
+                        // Firmware version
+                        if let Some(ref fw_ver) = info.firmware_ver_string {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Current firmware:").color(c_text()));
+                                ui.label(egui::RichText::new(fw_ver).color(c_text()));
+                            });
+                        }
+
+                        // Battery
+                        if let Some(pct) = info.battery_capacity {
+                            let (status, battery_color) = if info.battery_charging {
+                                (" (charging)".to_string(), c_text())
+                            } else if pct < 50 {
+                                (
+                                    " ⚠ low — consider charging first".to_string(),
+                                    egui::Color32::from_rgb(255, 193, 7),
+                                )
+                            } else {
+                                (String::new(), c_text())
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Battery:").color(c_text()));
+                                ui.label(
+                                    egui::RichText::new(format!("{}%{}", pct, status))
+                                        .color(battery_color),
+                                );
+                            });
+                        }
+
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Does this match your scope? If unsure, cancel immediately and select the model manually.",
+                            )
+                            .color(c_text()),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(base).color(c_text()));
+                    } else {
+                        // No auto-detect: red brick warning
+                        ui.label(
+                            egui::RichText::new("🔴 INSTALLING WRONG FIRMWARE WILL")
+                                .color(egui::Color32::from_rgb(255, 59, 48))
+                                .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new("PERMANENTLY BRICK YOUR SCOPE 🔴")
+                                .color(egui::Color32::from_rgb(255, 59, 48))
+                                .strong(),
+                        );
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Selected model:").color(c_text()));
+                            ui.label(
+                                egui::RichText::new(self.fw.model.display_name())
+                                    .color(c_text())
+                                    .strong(),
+                            );
+                        });
+                        ui.label(
+                            egui::RichText::new("Ensure the model matches your scope exactly.")
+                                .color(c_text()),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(base).color(c_text()));
+                    }
+
+                    ui.add_space(8.0);
+
+                    // Yellow "During installation" section
+                    ui.label(
+                        egui::RichText::new("During installation:")
+                            .color(egui::Color32::from_rgb(255, 193, 7))
+                            .strong(),
+                    );
+                    ui.label(egui::RichText::new("• The scope will reboot").color(c_text()));
+                    ui.label(egui::RichText::new("• DO NOT power off the scope").color(c_text()));
+                    ui.label(
+                        egui::RichText::new("• Keep the network connection stable").color(c_text()),
+                    );
+
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         if ui.add(primary_btn("Yes, update")).clicked() {

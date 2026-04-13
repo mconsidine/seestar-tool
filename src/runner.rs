@@ -25,6 +25,12 @@ pub struct InstallTarget {
 /// Sends `TaskMsg::Error` on failure or if battery is too low to flash safely.
 pub fn detect_model(rt: &Arc<tokio::runtime::Runtime>, tx: Sender, host: String, pem_key: Vec<u8>) {
     rt.spawn(async move {
+        // Send an immediate status message so the UI shows activity in the log
+        // before the blocking TCP work starts (which can take several seconds).
+        let _ = tx.send(TaskMsg::Log(format!(
+            "Connecting to {} for model detection…",
+            host
+        )));
         let tx_log = tx.clone();
         let result = tokio::task::spawn_blocking(move || {
             crate::firmware::detect_scope_model(&host, &pem_key, move |s| {
@@ -235,6 +241,14 @@ pub fn download_and_install(
         let tx_up = tx.clone();
         let path_str = path.to_string_lossy().into_owned();
         let result = tokio::task::spawn_blocking(move || {
+            // Preflight network check
+            let _ = tx_log.send(TaskMsg::Log("Checking network connectivity…".to_string()));
+            crate::firmware::preflight_network_check(
+                &host,
+                crate::firmware::UPDATER_CMD_PORT,
+                crate::firmware::UPDATER_DATA_PORT,
+            )?;
+
             let model = resolve_model(model, &host, pem_key.as_deref(), Some(&path_str), &tx_log)?;
             let iscope = crate::firmware::extract_iscope(&path_str, model, move |s| {
                 let _ = tx_ext.send(TaskMsg::Log(s));
@@ -280,6 +294,14 @@ pub fn install_apk(
         let tx_log = tx.clone();
         let tx_up = tx.clone();
         let result = tokio::task::spawn_blocking(move || {
+            // Preflight network check
+            let _ = tx_log.send(TaskMsg::Log("Checking network connectivity…".to_string()));
+            crate::firmware::preflight_network_check(
+                &host,
+                crate::firmware::UPDATER_CMD_PORT,
+                crate::firmware::UPDATER_DATA_PORT,
+            )?;
+
             let model = resolve_model(model, &host, pem_key.as_deref(), Some(&apk_path), &tx_log)?;
             let iscope = crate::firmware::extract_iscope(&apk_path, model, move |s| {
                 let _ = tx_ext.send(TaskMsg::Log(s));
@@ -325,6 +347,15 @@ pub fn install_iscope(
             } = target;
             let tx_log = tx.clone();
             let tx_up = tx.clone();
+
+            // Preflight network check
+            let _ = tx_log.send(TaskMsg::Log("Checking network connectivity…".to_string()));
+            crate::firmware::preflight_network_check(
+                &host,
+                crate::firmware::UPDATER_CMD_PORT,
+                crate::firmware::UPDATER_DATA_PORT,
+            )?;
+
             let model = resolve_model(model, &host, pem_key.as_deref(), None, &tx_log)?;
             let log = move |s: String| {
                 let _ = tx_log.send(TaskMsg::Log(s));

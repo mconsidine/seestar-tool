@@ -537,6 +537,7 @@ impl App {
         let (tx, rx) = task::channel();
         self.rx = rx;
         self.busy = true;
+        self.progress = Some((0, 0)); // show indeterminate gauge while detecting
         self.detect_pending = Some(action);
         crate::runner::detect_model(&self.rt, tx, self.host.trim().to_string(), key);
         true
