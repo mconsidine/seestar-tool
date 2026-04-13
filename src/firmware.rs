@@ -64,15 +64,25 @@ impl ScopeModel {
 /// Minimum acceptable size for an iscope firmware binary.
 const ISCOPE_MIN_BYTES: usize = 256 * 1024; // 256 KB
 
-/// Validate that `data` is a plausible iscope binary for `model`.
+/// Validate that `data` is a plausible iscope firmware archive.
+///
+/// An iscope file is a bzip2-compressed tar archive with a 128-byte RSA
+/// signature appended at the end.  We cannot determine 32-bit vs 64-bit
+/// bitness from the archive itself — that is encoded entirely in the asset
+/// path (`assets/iscope` vs `assets/iscope_64`) and is already enforced by
+/// `ScopeModel::asset_name()` / `remote_filename()`.
 ///
 /// Checks:
 /// - Minimum file size (guards against truncated or empty files)
-/// - ELF magic bytes `\x7fELF`
-/// - ELF class (byte 4): 1 = 32-bit for S50, 2 = 64-bit for S30 Pro
+/// - bzip2 magic bytes `BZh` at offset 0
 ///
 /// Returns `Err` with a human-readable message on any mismatch.
 pub fn validate_iscope_data(data: &[u8], model: ScopeModel) -> Result<()> {
+    if model.is_auto() {
+        return Err(anyhow!(
+            "BUG: model must be resolved before validating firmware."
+        ));
+    }
     if data.len() < ISCOPE_MIN_BYTES {
         return Err(anyhow!(
             "Firmware file is too small ({} bytes; minimum {}). \
@@ -81,37 +91,12 @@ pub fn validate_iscope_data(data: &[u8], model: ScopeModel) -> Result<()> {
             ISCOPE_MIN_BYTES
         ));
     }
-    if data.len() < 5 || &data[..4] != b"\x7fELF" {
+    // bzip2 magic: 'B' 'Z' 'h' followed by a block-size digit '1'..'9'
+    if data.len() < 3 || &data[..3] != b"BZh" {
         return Err(anyhow!(
-            "Firmware file does not have a valid ELF header. \
-             The file is likely corrupted or is not a Seestar firmware binary."
+            "Firmware file does not start with a bzip2 header (expected 'BZh'). \
+             The file is likely corrupted or is not a Seestar firmware archive."
         ));
-    }
-    let elf_class = data[4]; // 1 = 32-bit, 2 = 64-bit
-    match model {
-        ScopeModel::S50 => {
-            if elf_class != 1 {
-                return Err(anyhow!(
-                    "Firmware is a 64-bit binary, but the S50 requires a 32-bit binary. \
-                     This would brick the scope — aborting. \
-                     Check that the correct model is selected."
-                ));
-            }
-        }
-        ScopeModel::S30Pro => {
-            if elf_class != 2 {
-                return Err(anyhow!(
-                    "Firmware is a 32-bit binary, but the S30 / S30 Pro requires a 64-bit binary. \
-                     This would brick the scope — aborting. \
-                     Check that the correct model is selected."
-                ));
-            }
-        }
-        ScopeModel::Auto => {
-            return Err(anyhow!(
-                "BUG: model must be resolved before validating firmware."
-            ));
-        }
     }
     Ok(())
 }
@@ -140,7 +125,7 @@ pub fn extract_iscope(
     progress(format!("Extracted {} ({} MB)", asset, data.len() >> 20));
 
     validate_iscope_data(&data, model)?;
-    progress(format!("Validated {} (ELF OK, size OK)", asset));
+    progress(format!("Validated {} (bzip2 header OK, size OK)", asset));
     Ok(data)
 }
 
@@ -559,13 +544,13 @@ mod tests {
         addr
     }
 
-    /// Build a minimal fake ELF binary of the given class (1=32-bit, 2=64-bit),
-    /// padded to exceed ISCOPE_MIN_BYTES so validation passes.
-    fn make_fake_elf(elf_class: u8) -> Vec<u8> {
+    /// Build a minimal fake iscope archive: bzip2 magic header padded to exceed
+    /// ISCOPE_MIN_BYTES so validation passes.  The content is not a real bzip2
+    /// stream, but the magic bytes are correct so `validate_iscope_data` accepts it.
+    fn make_fake_bz2() -> Vec<u8> {
         let mut data = vec![0u8; ISCOPE_MIN_BYTES + 16];
-        data[0..4].copy_from_slice(b"\x7fELF");
-        data[4] = elf_class; // EI_CLASS: 1=32-bit, 2=64-bit
-        data[5] = 1; // EI_DATA: little-endian
+        data[0..3].copy_from_slice(b"BZh");
+        data[3] = b'9'; // block-size digit
         data
     }
 
@@ -617,36 +602,22 @@ mod tests {
     }
 
     #[test]
-    fn validate_iscope_rejects_bad_elf_magic() {
+    fn validate_iscope_rejects_bad_magic() {
         let mut data = vec![0u8; ISCOPE_MIN_BYTES + 16];
-        data[0..4].copy_from_slice(b"NELF");
+        data[0..3].copy_from_slice(b"XXX");
         let err = validate_iscope_data(&data, ScopeModel::S50).unwrap_err();
-        assert!(err.to_string().contains("ELF"));
+        assert!(err.to_string().contains("bzip2"));
     }
 
     #[test]
-    fn validate_iscope_rejects_64bit_for_s50() {
-        let data = make_fake_elf(2); // 64-bit
-        let err = validate_iscope_data(&data, ScopeModel::S50).unwrap_err();
-        assert!(err.to_string().contains("64-bit"));
-    }
-
-    #[test]
-    fn validate_iscope_rejects_32bit_for_s30pro() {
-        let data = make_fake_elf(1); // 32-bit
-        let err = validate_iscope_data(&data, ScopeModel::S30Pro).unwrap_err();
-        assert!(err.to_string().contains("32-bit"));
-    }
-
-    #[test]
-    fn validate_iscope_accepts_32bit_for_s50() {
-        let data = make_fake_elf(1);
+    fn validate_iscope_accepts_valid_bz2_for_s50() {
+        let data = make_fake_bz2();
         validate_iscope_data(&data, ScopeModel::S50).unwrap();
     }
 
     #[test]
-    fn validate_iscope_accepts_64bit_for_s30pro() {
-        let data = make_fake_elf(2);
+    fn validate_iscope_accepts_valid_bz2_for_s30pro() {
+        let data = make_fake_bz2();
         validate_iscope_data(&data, ScopeModel::S30Pro).unwrap();
     }
 
@@ -708,8 +679,8 @@ mod tests {
 
     #[test]
     fn extract_iscope_s50_from_plain_apk() {
-        let firmware = make_fake_elf(1); // 32-bit for S50
-        let firmware_64 = make_fake_elf(2);
+        let firmware = make_fake_bz2();
+        let firmware_64 = make_fake_bz2();
         let apk = make_apk(&[
             ("assets/iscope", &firmware),
             ("assets/iscope_64", &firmware_64),
@@ -728,8 +699,8 @@ mod tests {
 
     #[test]
     fn extract_iscope_s30pro_from_plain_apk() {
-        let firmware = make_fake_elf(2); // 64-bit for S30 Pro
-        let firmware_32 = make_fake_elf(1);
+        let firmware = make_fake_bz2();
+        let firmware_32 = make_fake_bz2();
         let apk = make_apk(&[
             ("assets/iscope", &firmware_32),
             ("assets/iscope_64", &firmware),
@@ -759,7 +730,7 @@ mod tests {
         use std::io::Cursor;
         use zip::write::{SimpleFileOptions, ZipWriter};
 
-        let firmware = make_fake_elf(1); // 32-bit for S50
+        let firmware = make_fake_bz2();
         let inner_apk = make_apk(&[("assets/iscope", &firmware)]);
 
         let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
@@ -800,8 +771,8 @@ mod tests {
     #[test]
     fn upload_firmware_file_bad_address_returns_error() {
         // File exists and is valid, but scope address is unreachable.
-        let elf = make_fake_elf(2); // 64-bit for S30Pro
-        let tmp = TempFile::write("fw_test_iscope_file", &elf);
+        let bz2 = make_fake_bz2();
+        let tmp = TempFile::write("fw_test_iscope_file", &bz2);
         let err = upload_firmware_file("127.0.0.1", &tmp.0, ScopeModel::S30Pro, |_| {}, |_, _| {})
             .unwrap_err();
         assert!(err.to_string().contains("Cannot connect"));
