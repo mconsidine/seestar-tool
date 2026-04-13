@@ -398,17 +398,26 @@ impl FirmwareTab {
 
     /// When model is Auto, run detection first; `action` is held until `ModelDetected`.
     /// Returns `true` if detection was started (caller should not proceed to confirm).
+    /// If pre-extracted key is not available but APK path is, let the runner handle it (it can extract synchronously).
     fn maybe_start_detection(&mut self, action: PendingAction) -> bool {
         if !self.model.is_auto() {
             return false;
         }
+        // If we have a pre-extracted key, do early detection in the GUI.
         let Some(pem_key) = self.pem_key.clone() else {
-            self.log.push(
-                "ERROR: Auto-detect requires an APK to extract the key from. \
-                 Load an APK file or select a model manually."
-                    .to_string(),
-            );
-            return true; // consumed — don't show stale confirm
+            // No pre-extracted key. If APK path is available, skip early detection
+            // and let the runner extract the key synchronously during the action.
+            // If no APK path either, error out.
+            if self.apk_path.is_empty() {
+                self.log.push(
+                    "ERROR: Auto-detect requires an APK to extract the key from. \
+                     Load an APK file or select a model manually."
+                        .to_string(),
+                );
+                return true; // consumed — don't show stale confirm
+            }
+            // APK path is available; let the runner handle extraction
+            return false;
         };
         let (tx, rx) = channel();
         self.tx = Some(tx.clone());

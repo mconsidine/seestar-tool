@@ -498,14 +498,23 @@ impl App {
         if !self.fw_model.is_auto() {
             return false;
         }
+        // If we have a pre-extracted key, do early detection.
         let Some(key) = self.pem_key.clone() else {
-            self.push_log(
-                Style::default().fg(Color::Red),
-                "Auto-detect requires an APK to extract the key from. \
-                 Load an APK file or select a model manually."
-                    .to_string(),
-            );
-            return true;
+            // No pre-extracted key. If APK path is available, skip early detection
+            // and let the runner extract the key synchronously during the action.
+            // If no APK path either, error out.
+            let apk_path = self.apk_path.trim();
+            if apk_path.is_empty() {
+                self.push_log(
+                    Style::default().fg(Color::Red),
+                    "Auto-detect requires an APK to extract the key from. \
+                     Load an APK file or select a model manually."
+                        .to_string(),
+                );
+                return true;
+            }
+            // APK path is available; let the runner handle extraction
+            return false;
         };
         let (tx, rx) = task::channel();
         self.rx = rx;
@@ -2028,21 +2037,14 @@ mod tests {
     #[test]
     fn run_action_apk_auto_model_no_pem_logs_error_no_confirm() {
         let mut app = make_app();
-        // Auto model, no pem_key
+        // Auto model, APK path, but no pem_key → runner will extract key from APK
         app.apk_path = "/some/file.apk".to_string();
 
         app.run_action();
 
-        assert!(
-            app.confirm.is_none(),
-            "confirm should not appear when pem is missing"
-        );
-        assert!(!app.busy);
-        let has_error = app
-            .logs
-            .iter()
-            .any(|(_, msg)| msg.contains("Auto-detect requires"));
-        assert!(has_error);
+        // Should proceed to action (not error) since APK path is available
+        // for fallback extraction by the runner
+        assert!(app.confirm.is_some(), "action should proceed with APK path");
     }
 
     #[test]
