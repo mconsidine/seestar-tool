@@ -1059,7 +1059,7 @@ mod tests {
                 // Scope comes back on the same port.
                 std::thread::sleep(Duration::from_millis(20));
                 let new_l = TcpListener::bind(format!("127.0.0.1:{}", cmd_port)).unwrap();
-                std::thread::sleep(Duration::from_millis(2000));
+                std::thread::sleep(Duration::from_millis(5000));
                 drop(new_l);
             }
         });
