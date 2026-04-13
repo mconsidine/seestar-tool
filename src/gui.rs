@@ -232,8 +232,8 @@ struct FirmwareTab {
     /// When model is Auto and install was clicked, the action is held here while
     /// detection runs.  On `ModelDetected` it moves to `confirm`.
     detection_pending: Option<PendingAction>,
-    /// The model resolved by auto-detection, shown in the confirm dialog.
-    detected_model: Option<ScopeModel>,
+    /// Device info resolved by auto-detection, shown in the confirm dialog.
+    detected_model: Option<crate::firmware::DeviceInfo>,
     /// PEM private key bytes extracted from the loaded APK, used for auto-detection.
     pem_key: Option<Vec<u8>>,
     /// Background channel for PEM extraction (separate from install channel).
@@ -320,13 +320,13 @@ impl FirmwareTab {
                     self.busy = false;
                     self.progress = (0, 0);
                 }
-                TaskMsg::ModelDetected(model) => {
+                TaskMsg::ModelDetected(info) => {
                     self.log.push(format!(
                         "Detected: {} — {}",
-                        model.display_name(),
-                        model.bitness_description()
+                        info.model.display_name(),
+                        info.model.bitness_description()
                     ));
-                    self.detected_model = Some(model);
+                    self.detected_model = Some(info);
                     self.confirm = self.detection_pending.take();
                     self.busy = false;
                     self.progress = (0, 0);
@@ -424,7 +424,10 @@ impl FirmwareTab {
     /// The model to use for the actual install — either the auto-detected model
     /// (after user confirmation) or the manually selected one.
     fn resolved_model(&mut self) -> ScopeModel {
-        self.detected_model.take().unwrap_or(self.model)
+        self.detected_model
+            .take()
+            .map(|d| d.model)
+            .unwrap_or(self.model)
     }
 
     fn start_download_and_install(&mut self) {
@@ -642,16 +645,36 @@ impl eframe::App for SeestarApp {
                     "This will download firmware from APKPure and upload it to your Seestar."
                 }
             };
-            let body = if let Some(m) = self.fw.detected_model {
+            let body = if let Some(ref info) = self.fw.detected_model {
+                let fw_line = info
+                    .firmware_ver_string
+                    .as_deref()
+                    .map(|v| format!("\nCurrent firmware:     {}", v))
+                    .unwrap_or_default();
+                let battery_line = match info.battery_capacity {
+                    Some(pct) => {
+                        let status = if info.battery_charging {
+                            " (charging)".to_string()
+                        } else if pct < 50 {
+                            " ⚠ low — consider charging first".to_string()
+                        } else {
+                            String::new()
+                        };
+                        format!("\nBattery:              {}%{}", pct, status)
+                    }
+                    None => String::new(),
+                };
                 format!(
-                    "Auto-detected model:  {} — {}\n\n\
+                    "Auto-detected model:  {} — {}{}{}\n\n\
                      Does this match your scope?\n\
                      If unsure, cancel and select the model manually.\n\n\
                      {}\n\
                      The scope will reboot during installation.\n\n\
                      Ensure the scope is fully charged and your network is stable.",
-                    m.display_name(),
-                    m.bitness_description(),
+                    info.model.display_name(),
+                    info.model.bitness_description(),
+                    fw_line,
+                    battery_line,
                     base,
                 )
             } else {

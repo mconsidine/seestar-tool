@@ -19,9 +19,10 @@ pub struct InstallTarget {
 
 /// Detect the scope model via authenticated API and send `TaskMsg::ModelDetected`.
 ///
-/// Sends `TaskMsg::ModelDetected(model)` on success so the UI can show the
-/// result to the user for confirmation before any firmware is flashed.
-/// Sends `TaskMsg::Error` on failure.
+/// Sends `TaskMsg::ModelDetected(info)` on success — `DeviceInfo` carries the
+/// resolved model, firmware version, and battery level so the UI can show them
+/// to the user for confirmation before any firmware is flashed.
+/// Sends `TaskMsg::Error` on failure or if battery is too low to flash safely.
 pub fn detect_model(rt: &Arc<tokio::runtime::Runtime>, tx: Sender, host: String, pem_key: Vec<u8>) {
     rt.spawn(async move {
         let tx_log = tx.clone();
@@ -32,8 +33,12 @@ pub fn detect_model(rt: &Arc<tokio::runtime::Runtime>, tx: Sender, host: String,
         })
         .await;
         match result {
-            Ok(Ok(model)) => {
-                let _ = tx.send(TaskMsg::ModelDetected(model));
+            Ok(Ok(info)) => {
+                if let Err(e) = info.check_battery() {
+                    let _ = tx.send(TaskMsg::Error(e.to_string()));
+                    return;
+                }
+                let _ = tx.send(TaskMsg::ModelDetected(info));
             }
             Ok(Err(e)) => {
                 let _ = tx.send(TaskMsg::Error(e.to_string()));
@@ -145,9 +150,19 @@ fn resolve_model(
     match crate::firmware::detect_scope_model(host, key, move |s| {
         let _ = tx_log.send(TaskMsg::Log(s));
     }) {
-        Ok(m) => {
-            let _ = tx.send(TaskMsg::Log(format!("Auto-detected: {}", m.display_name())));
-            Ok(m)
+        Ok(info) => {
+            let _ = tx.send(TaskMsg::Log(format!(
+                "Auto-detected: {}",
+                info.model.display_name()
+            )));
+            if let Some(fw) = &info.firmware_ver_string {
+                let _ = tx.send(TaskMsg::Log(format!("Scope firmware: {}", fw)));
+            }
+            if let Some(warn) = info.battery_warning() {
+                let _ = tx.send(TaskMsg::Log(format!("Warning: {}", warn)));
+            }
+            info.check_battery()?;
+            Ok(info.model)
         }
         Err(e) => Err(anyhow::anyhow!(
             "Could not auto-detect model: {}. Select a model manually.",
@@ -166,6 +181,28 @@ pub fn download_and_install(
     target: InstallTarget,
 ) {
     rt.spawn(async move {
+        // Pre-flight: verify the scope is reachable before starting what may be
+        // a large download.  This catches "scope is off" early without wasting
+        // the user's bandwidth or time.
+        {
+            let host = target.host.clone();
+            let reachable =
+                tokio::task::spawn_blocking(move || crate::firmware::can_connect(&host, 4700))
+                    .await
+                    .unwrap_or(false);
+            if !reachable {
+                let _ = tx.send(TaskMsg::Error(format!(
+                    "Cannot reach scope at {} — is it powered on and connected to the network?",
+                    target.host
+                )));
+                return;
+            }
+            let _ = tx.send(TaskMsg::Log(format!(
+                "Scope reachable at {} — starting download.",
+                target.host
+            )));
+        }
+
         let prog = {
             let tx = tx.clone();
             move |d, t| {

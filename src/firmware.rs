@@ -72,6 +72,55 @@ impl ScopeModel {
     }
 }
 
+/// Information retrieved from the scope during model auto-detection.
+#[derive(Clone, Debug)]
+pub struct DeviceInfo {
+    pub model: ScopeModel,
+    /// Firmware version string reported by the scope (e.g. `"4.70"`).
+    pub firmware_ver_string: Option<String>,
+    /// Battery charge level (0–100), absent if the field was missing.
+    pub battery_capacity: Option<u8>,
+    /// True when the scope reports it is not discharging (i.e. charging or full).
+    pub battery_charging: bool,
+}
+
+impl DeviceInfo {
+    const LOW_BATTERY_BLOCK_PCT: u8 = 20;
+    const LOW_BATTERY_WARN_PCT: u8 = 50;
+
+    /// Returns `Err` if the battery is critically low and the scope is not
+    /// charging.  A power-off mid-flash can brick the scope.
+    pub fn check_battery(&self) -> Result<()> {
+        if let Some(pct) = self.battery_capacity
+            && pct < Self::LOW_BATTERY_BLOCK_PCT
+            && !self.battery_charging
+        {
+            return Err(anyhow!(
+                "Battery too low to safely flash firmware ({}%). \
+                     Charge to at least {}% or connect a charger first.",
+                pct,
+                Self::LOW_BATTERY_BLOCK_PCT
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns a warning string if battery is below the recommended level but
+    /// not critically low.  Returns `None` when battery is fine or unknown.
+    pub fn battery_warning(&self) -> Option<String> {
+        let pct = self.battery_capacity?;
+        if pct < Self::LOW_BATTERY_WARN_PCT && !self.battery_charging {
+            Some(format!(
+                "Battery at {}% — consider charging to {}%+ before flashing.",
+                pct,
+                Self::LOW_BATTERY_WARN_PCT
+            ))
+        } else {
+            None
+        }
+    }
+}
+
 // ── iscope validation ─────────────────────────────────────────────────────────
 
 /// Minimum acceptable size for an iscope firmware binary.
@@ -485,16 +534,15 @@ pub(crate) fn recv_line(stream: &mut TcpStream) -> Result<String> {
 const API_PORT: u16 = 4700;
 
 /// Connect to the scope's JSON-RPC API on port 4700, authenticate with
-/// RSA SHA1/PKCS1v15 challenge-response, and read `product_model` from
-/// `get_device_state`.
+/// RSA SHA1/PKCS1v15 challenge-response, and read device state.
 ///
-/// Returns `ScopeModel::S30Pro` if the product_model contains "S30",
-/// otherwise `ScopeModel::S50`.
+/// Returns a [`DeviceInfo`] containing the resolved [`ScopeModel`] plus
+/// optional firmware version and battery information.
 pub fn detect_scope_model(
     address: &str,
     pem_key: &[u8],
     log: impl Fn(String),
-) -> Result<ScopeModel> {
+) -> Result<DeviceInfo> {
     detect_scope_model_on_port(address, API_PORT, pem_key, log)
 }
 
@@ -503,7 +551,7 @@ fn detect_scope_model_on_port(
     port: u16,
     pem_key: &[u8],
     log: impl Fn(String),
-) -> Result<ScopeModel> {
+) -> Result<DeviceInfo> {
     use base64::Engine;
     use rsa::pkcs1v15::SigningKey;
     use rsa::pkcs8::DecodePrivateKey;
@@ -615,20 +663,49 @@ fn detect_scope_model_on_port(
     // Be strict: only accept known model strings. Defaulting on an unrecognised
     // model would flash the wrong firmware variant and could brick the scope.
     // Check "S30 Pro" before "S30" — the latter is a substring of the former.
-    if product_model.contains("S30 Pro") {
-        Ok(ScopeModel::S30Pro)
+    let model = if product_model.contains("S30 Pro") {
+        ScopeModel::S30Pro
     } else if product_model.contains("S30") {
-        Ok(ScopeModel::S30)
+        ScopeModel::S30
     } else if product_model.contains("S50") {
-        Ok(ScopeModel::S50)
+        ScopeModel::S50
     } else {
-        Err(anyhow!(
+        return Err(anyhow!(
             "Unrecognized product_model '{}'. \
              Cannot safely determine the firmware variant — aborting. \
              Select your model manually (S50, S30, or S30 Pro).",
             product_model
-        ))
-    }
+        ));
+    };
+
+    // Parse optional device info — missing fields are treated as unknown.
+    let firmware_ver_string = state_v["result"]["device"]["firmware_ver_string"]
+        .as_str()
+        .map(|s| s.to_string());
+    let battery_capacity = state_v["result"]["pi_status"]["battery_capacity"]
+        .as_u64()
+        .map(|n| n.min(100) as u8);
+    let battery_charging = state_v["result"]["pi_status"]["charger_status"]
+        .as_str()
+        .map(|s| s != "Discharging")
+        .unwrap_or(false);
+
+    log(format!(
+        "firmware: {}  battery: {}{}",
+        firmware_ver_string.as_deref().unwrap_or("unknown"),
+        battery_capacity
+            .map(|p| format!("{}%", p))
+            .as_deref()
+            .unwrap_or("unknown"),
+        if battery_charging { " (charging)" } else { "" },
+    ));
+
+    Ok(DeviceInfo {
+        model,
+        firmware_ver_string,
+        battery_capacity,
+        battery_charging,
+    })
 }
 
 #[cfg(test)]
@@ -1218,11 +1295,20 @@ mod tests {
             recv_line(&mut conn).unwrap();
             conn.write_all(b"{\"id\":3,\"code\":0}\r\n").unwrap();
 
-            // 5. Read get_device_state, reply with product_model
+            // 5. Read get_device_state, reply with product_model and device info
             recv_line(&mut conn).unwrap();
             let state = serde_json::json!({
                 "id": 4,
-                "result": {"device": {"product_model": product_model}}
+                "result": {
+                    "device": {
+                        "product_model": product_model,
+                        "firmware_ver_string": "7.18"
+                    },
+                    "pi_status": {
+                        "battery_capacity": 80,
+                        "charger_status": "Discharging"
+                    }
+                }
             });
             conn.write_all(format!("{}\r\n", state).as_bytes()).unwrap();
         });
@@ -1268,16 +1354,19 @@ mod tests {
     fn detect_scope_model_s50_product_model() {
         let addr = serve_api_once("Seestar S50", 0);
         let pem = make_test_pem_key();
-        let model = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
-        assert_eq!(model, ScopeModel::S50);
+        let info = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
+        assert_eq!(info.model, ScopeModel::S50);
+        assert_eq!(info.firmware_ver_string.as_deref(), Some("7.18"));
+        assert_eq!(info.battery_capacity, Some(80));
+        assert!(!info.battery_charging);
     }
 
     #[test]
     fn detect_scope_model_s30pro_product_model() {
         let addr = serve_api_once("Seestar S30 Pro", 0);
         let pem = make_test_pem_key();
-        let model = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
-        assert_eq!(model, ScopeModel::S30Pro);
+        let info = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
+        assert_eq!(info.model, ScopeModel::S30Pro);
     }
 
     #[test]
@@ -1285,8 +1374,8 @@ mod tests {
         // Plain "S30" (32-bit ARMv7l) must map to S30, not S30Pro.
         let addr = serve_api_once("Seestar S30", 0);
         let pem = make_test_pem_key();
-        let model = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
-        assert_eq!(model, ScopeModel::S30);
+        let info = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
+        assert_eq!(info.model, ScopeModel::S30);
     }
 
     #[test]
@@ -1294,8 +1383,8 @@ mod tests {
         // "S30 Pro" contains "S30" — must match S30Pro, not S30.
         let addr = serve_api_once("Seestar S30 Pro", 0);
         let pem = make_test_pem_key();
-        let model = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
-        assert_eq!(model, ScopeModel::S30Pro);
+        let info = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
+        assert_eq!(info.model, ScopeModel::S30Pro);
     }
 
     #[test]
@@ -1404,6 +1493,94 @@ mod tests {
             "expected invalid-JSON error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn detect_scope_model_missing_optional_fields_returns_none() {
+        // State response has product_model but no firmware_ver_string or pi_status.
+        let addr = serve_bad_state(
+            b"{\"id\":3,\"result\":{\"device\":{\"product_model\":\"Seestar S50\"}}}\r\n",
+        );
+        let pem = make_test_pem_key();
+        let info = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
+        assert_eq!(info.model, ScopeModel::S50);
+        assert!(info.firmware_ver_string.is_none());
+        assert!(info.battery_capacity.is_none());
+    }
+
+    // ── DeviceInfo battery helpers ────────────────────────────────────────────
+
+    fn make_device_info(battery_capacity: Option<u8>, battery_charging: bool) -> DeviceInfo {
+        DeviceInfo {
+            model: ScopeModel::S50,
+            firmware_ver_string: None,
+            battery_capacity,
+            battery_charging,
+        }
+    }
+
+    #[test]
+    fn check_battery_blocks_critically_low_discharging() {
+        let info = make_device_info(Some(10), false);
+        let err = info.check_battery().unwrap_err();
+        assert!(err.to_string().contains("Battery too low"), "{}", err);
+        assert!(err.to_string().contains("10%"), "{}", err);
+    }
+
+    #[test]
+    fn check_battery_allows_low_battery_when_charging() {
+        // < 20% but charging — should not block.
+        let info = make_device_info(Some(10), true);
+        info.check_battery().unwrap();
+    }
+
+    #[test]
+    fn check_battery_allows_sufficient_battery() {
+        let info = make_device_info(Some(80), false);
+        info.check_battery().unwrap();
+    }
+
+    #[test]
+    fn check_battery_allows_unknown_battery() {
+        // No battery info — can't block.
+        let info = make_device_info(None, false);
+        info.check_battery().unwrap();
+    }
+
+    #[test]
+    fn battery_warning_returned_for_low_discharging() {
+        let info = make_device_info(Some(30), false);
+        let warn = info.battery_warning();
+        assert!(warn.is_some());
+        assert!(warn.unwrap().contains("30%"));
+    }
+
+    #[test]
+    fn battery_warning_none_when_charging() {
+        let info = make_device_info(Some(30), true);
+        assert!(info.battery_warning().is_none());
+    }
+
+    #[test]
+    fn battery_warning_none_when_sufficient() {
+        let info = make_device_info(Some(80), false);
+        assert!(info.battery_warning().is_none());
+    }
+
+    #[test]
+    fn battery_warning_none_when_unknown() {
+        let info = make_device_info(None, false);
+        assert!(info.battery_warning().is_none());
+    }
+
+    #[test]
+    fn detect_scope_model_returns_firmware_version_and_battery() {
+        let addr = serve_api_once("Seestar S50", 0);
+        let pem = make_test_pem_key();
+        let info = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
+        assert_eq!(info.firmware_ver_string.as_deref(), Some("7.18"));
+        assert_eq!(info.battery_capacity, Some(80));
+        assert!(!info.battery_charging);
     }
 
     #[test]

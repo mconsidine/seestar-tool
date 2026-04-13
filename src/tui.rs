@@ -332,8 +332,8 @@ struct App {
 
     // auto-detection: action waiting for model detection result
     detect_pending: Option<ConfirmAction>,
-    // model resolved by auto-detection, kept until confirm is executed
-    detected_model: Option<crate::firmware::ScopeModel>,
+    // device info resolved by auto-detection, kept until confirm is executed
+    detected_model: Option<crate::firmware::DeviceInfo>,
 
     quit: bool,
 }
@@ -451,18 +451,18 @@ impl App {
                         "Done.".to_string(),
                     );
                 }
-                TaskMsg::ModelDetected(model) => {
+                TaskMsg::ModelDetected(info) => {
                     self.busy = false;
                     self.progress = None;
                     self.push_log(
                         Style::default().fg(Color::Cyan),
                         format!(
                             "Detected: {} — {}",
-                            model.display_name(),
-                            model.bitness_description()
+                            info.model.display_name(),
+                            info.model.bitness_description()
                         ),
                     );
-                    self.detected_model = Some(model);
+                    self.detected_model = Some(info);
                     if let Some(action) = self.detect_pending.take() {
                         self.confirm = Some(ConfirmDialog::new(action));
                     }
@@ -668,7 +668,11 @@ impl App {
             return;
         };
         // Use detected model if auto-detection ran, otherwise use the selected model.
-        let resolved_model = self.detected_model.take().unwrap_or(self.fw_model);
+        let resolved_model = self
+            .detected_model
+            .take()
+            .map(|d| d.model)
+            .unwrap_or(self.fw_model);
         match dlg.action {
             ConfirmAction::InstallApk(path) => {
                 let (tx, rx) = task::channel();
@@ -1522,16 +1526,36 @@ fn draw_confirm_dialog(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    // Build full body text, prepending detected model info when available.
-    let full_body: String = if let Some(model) = &app.detected_model {
+    // Build full body text, prepending detected device info when available.
+    let full_body: String = if let Some(info) = &app.detected_model {
+        let fw_line = info
+            .firmware_ver_string
+            .as_deref()
+            .map(|v| format!("\nCurrent firmware:     {}", v))
+            .unwrap_or_default();
+        let battery_line = match info.battery_capacity {
+            Some(pct) => {
+                let note = if info.battery_charging {
+                    " (charging)"
+                } else if pct < 50 {
+                    " ⚠ low"
+                } else {
+                    ""
+                };
+                format!("\nBattery:              {}%{}", pct, note)
+            }
+            None => String::new(),
+        };
         format!(
-            "Auto-detected model:  {} — {}\n\
+            "Auto-detected model:  {} — {}{}{}\n\
              Does this match your scope?\n\
              If unsure, cancel and select the model manually.\n\
              \n\
              {}",
-            model.display_name(),
-            model.bitness_description(),
+            info.model.display_name(),
+            info.model.bitness_description(),
+            fw_line,
+            battery_line,
             dlg.body()
         )
     } else {
@@ -1895,6 +1919,16 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// Build a minimal `DeviceInfo` for use in tests.
+    fn make_device_info(model: crate::firmware::ScopeModel) -> crate::firmware::DeviceInfo {
+        crate::firmware::DeviceInfo {
+            model,
+            firmware_ver_string: Some("4.70".to_string()),
+            battery_capacity: Some(80),
+            battery_charging: false,
+        }
+    }
+
     /// Build an App for state-machine tests.
     /// The version-fetch task spawned by `new()` will fail silently — that's fine.
     fn make_app() -> App {
@@ -2091,7 +2125,7 @@ mod tests {
         let mut app = make_app();
         // Set up an S50 manual selection but provide a detected S30Pro
         app.fw_model = crate::firmware::ScopeModel::S50;
-        app.detected_model = Some(crate::firmware::ScopeModel::S30Pro);
+        app.detected_model = Some(make_device_info(crate::firmware::ScopeModel::S30Pro));
         app.host = "192.0.2.1".to_string(); // non-routable so the task fails fast
         app.confirm = Some(ConfirmDialog::new(ConfirmAction::InstallApk(
             "/dev/null".to_string(),
@@ -2145,7 +2179,7 @@ mod tests {
         app.confirm = Some(ConfirmDialog::new(ConfirmAction::InstallApk(
             "/dev/null".to_string(),
         )));
-        app.detected_model = Some(crate::firmware::ScopeModel::S30Pro);
+        app.detected_model = Some(make_device_info(crate::firmware::ScopeModel::S30Pro));
 
         app.handle_key_confirm(KeyCode::Esc);
 
@@ -2162,7 +2196,7 @@ mod tests {
         let mut dlg = ConfirmDialog::new(ConfirmAction::InstallApk("/dev/null".to_string()));
         dlg.focus = ConfirmFocus::No; // cursor on Cancel
         app.confirm = Some(dlg);
-        app.detected_model = Some(crate::firmware::ScopeModel::S50);
+        app.detected_model = Some(make_device_info(crate::firmware::ScopeModel::S50));
 
         app.handle_key_confirm(KeyCode::Enter);
 
@@ -2179,7 +2213,7 @@ mod tests {
         let mut dlg = ConfirmDialog::new(ConfirmAction::InstallApk("/dev/null".to_string()));
         dlg.focus = ConfirmFocus::Yes; // cursor on Yes
         app.confirm = Some(dlg);
-        app.detected_model = Some(crate::firmware::ScopeModel::S30Pro);
+        app.detected_model = Some(make_device_info(crate::firmware::ScopeModel::S30Pro));
         app.host = "192.0.2.1".to_string();
 
         app.handle_key_confirm(KeyCode::Enter);
@@ -2202,9 +2236,9 @@ mod tests {
         // Simulate receiving ModelDetected via the channel
         let (tx, rx) = crate::task::channel();
         app.rx = rx;
-        tx.send(crate::task::TaskMsg::ModelDetected(
+        tx.send(crate::task::TaskMsg::ModelDetected(make_device_info(
             crate::firmware::ScopeModel::S30Pro,
-        ))
+        )))
         .unwrap();
 
         app.drain_messages();
@@ -2222,7 +2256,7 @@ mod tests {
     fn error_msg_clears_detect_pending_and_detected_model() {
         let mut app = make_app();
         app.detect_pending = Some(ConfirmAction::InstallApk("/some/file.apk".to_string()));
-        app.detected_model = Some(crate::firmware::ScopeModel::S50);
+        app.detected_model = Some(make_device_info(crate::firmware::ScopeModel::S50));
         app.busy = true;
 
         let (tx, rx) = crate::task::channel();
@@ -2254,9 +2288,9 @@ mod tests {
 
         let (tx, rx) = crate::task::channel();
         app.rx = rx;
-        tx.send(crate::task::TaskMsg::ModelDetected(
+        tx.send(crate::task::TaskMsg::ModelDetected(make_device_info(
             crate::firmware::ScopeModel::S50,
-        ))
+        )))
         .unwrap();
 
         app.drain_messages();
