@@ -936,13 +936,15 @@ impl App {
                     self.fw_model = match self.fw_model {
                         crate::firmware::ScopeModel::Auto => crate::firmware::ScopeModel::S30Pro,
                         crate::firmware::ScopeModel::S50 => crate::firmware::ScopeModel::Auto,
-                        crate::firmware::ScopeModel::S30Pro => crate::firmware::ScopeModel::S50,
+                        crate::firmware::ScopeModel::S30 => crate::firmware::ScopeModel::S50,
+                        crate::firmware::ScopeModel::S30Pro => crate::firmware::ScopeModel::S30,
                     };
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
                     self.fw_model = match self.fw_model {
                         crate::firmware::ScopeModel::Auto => crate::firmware::ScopeModel::S50,
-                        crate::firmware::ScopeModel::S50 => crate::firmware::ScopeModel::S30Pro,
+                        crate::firmware::ScopeModel::S50 => crate::firmware::ScopeModel::S30,
+                        crate::firmware::ScopeModel::S30 => crate::firmware::ScopeModel::S30Pro,
                         crate::firmware::ScopeModel::S30Pro => crate::firmware::ScopeModel::Auto,
                     };
                 }
@@ -1239,12 +1241,14 @@ fn draw_firmware(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let model_idx = match app.fw_model {
         crate::firmware::ScopeModel::Auto => 0,
         crate::firmware::ScopeModel::S50 => 1,
-        crate::firmware::ScopeModel::S30Pro => 2,
+        crate::firmware::ScopeModel::S30 => 2,
+        crate::firmware::ScopeModel::S30Pro => 3,
     };
     let model_tabs = Tabs::new(vec![
         Line::from("Auto-detect"),
         Line::from("S50"),
-        Line::from("S30 / S30 Pro"),
+        Line::from("S30"),
+        Line::from("S30 Pro"),
     ])
     .select(model_idx)
     .block(

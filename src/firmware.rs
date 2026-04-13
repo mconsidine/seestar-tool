@@ -19,9 +19,11 @@ pub enum ScopeModel {
     /// Auto-detect the model from the scope's API before flashing.
     #[default]
     Auto,
-    /// S50 and earlier — uses the 32-bit `iscope` binary.
+    /// S50 — uses the 32-bit `iscope` binary (ARMv7).
     S50,
-    /// S30 and S30 Pro — uses the 64-bit `iscope_64` binary.
+    /// S30 — uses the 32-bit `iscope` binary (ARMv7l).
+    S30,
+    /// S30 Pro — uses the 64-bit `iscope_64` binary (ARM64).
     S30Pro,
 }
 
@@ -30,7 +32,7 @@ impl ScopeModel {
     /// Panics if called on `Auto` (must be resolved first).
     pub fn asset_name(self) -> &'static str {
         match self {
-            ScopeModel::S50 => "assets/iscope",
+            ScopeModel::S50 | ScopeModel::S30 => "assets/iscope",
             ScopeModel::S30Pro => "assets/iscope_64",
             ScopeModel::Auto => panic!("ScopeModel::Auto must be resolved before use"),
         }
@@ -40,7 +42,7 @@ impl ScopeModel {
     /// Panics if called on `Auto` (must be resolved first).
     pub fn remote_filename(self) -> &'static str {
         match self {
-            ScopeModel::S50 => "iscope",
+            ScopeModel::S50 | ScopeModel::S30 => "iscope",
             ScopeModel::S30Pro => "iscope_64",
             ScopeModel::Auto => panic!("ScopeModel::Auto must be resolved before use"),
         }
@@ -54,6 +56,7 @@ impl ScopeModel {
         match self {
             ScopeModel::Auto => "Auto",
             ScopeModel::S50 => "S50",
+            ScopeModel::S30 => "S30",
             ScopeModel::S30Pro => "S30 Pro",
         }
     }
@@ -110,8 +113,8 @@ fn validate_iscope_data_inner(data: &[u8], model: ScopeModel, min_bytes: usize) 
 /// Expected ELF class for each model.
 fn expected_elf_class(model: ScopeModel) -> u8 {
     match model {
-        ScopeModel::S50 => 1,    // ELFCLASS32
-        ScopeModel::S30Pro => 2, // ELFCLASS64
+        ScopeModel::S50 | ScopeModel::S30 => 1, // ELFCLASS32
+        ScopeModel::S30Pro => 2,                // ELFCLASS64
         ScopeModel::Auto => unreachable!(),
     }
 }
@@ -601,15 +604,18 @@ fn detect_scope_model_on_port(
 
     // Be strict: only accept known model strings. Defaulting on an unrecognised
     // model would flash the wrong firmware variant and could brick the scope.
-    if product_model.contains("S30") {
+    // Check "S30 Pro" before "S30" — the latter is a substring of the former.
+    if product_model.contains("S30 Pro") {
         Ok(ScopeModel::S30Pro)
+    } else if product_model.contains("S30") {
+        Ok(ScopeModel::S30)
     } else if product_model.contains("S50") {
         Ok(ScopeModel::S50)
     } else {
         Err(anyhow!(
             "Unrecognized product_model '{}'. \
              Cannot safely determine the firmware variant — aborting. \
-             Select your model manually (S50 or S30 / S30 Pro).",
+             Select your model manually (S50, S30, or S30 Pro).",
             product_model
         ))
     }
@@ -783,6 +789,7 @@ mod tests {
     fn scope_model_auto_is_auto() {
         assert!(ScopeModel::Auto.is_auto());
         assert!(!ScopeModel::S50.is_auto());
+        assert!(!ScopeModel::S30.is_auto());
         assert!(!ScopeModel::S30Pro.is_auto());
     }
 
@@ -790,12 +797,19 @@ mod tests {
     fn scope_model_display_names() {
         assert_eq!(ScopeModel::Auto.display_name(), "Auto");
         assert_eq!(ScopeModel::S50.display_name(), "S50");
+        assert_eq!(ScopeModel::S30.display_name(), "S30");
         assert_eq!(ScopeModel::S30Pro.display_name(), "S30 Pro");
     }
 
     #[test]
     fn scope_model_s50_asset_name() {
         assert_eq!(ScopeModel::S50.asset_name(), "assets/iscope");
+    }
+
+    #[test]
+    fn scope_model_s30_asset_name() {
+        // S30 is 32-bit ARMv7l — same iscope binary as S50
+        assert_eq!(ScopeModel::S30.asset_name(), "assets/iscope");
     }
 
     #[test]
@@ -806,6 +820,11 @@ mod tests {
     #[test]
     fn scope_model_s50_remote_filename() {
         assert_eq!(ScopeModel::S50.remote_filename(), "iscope");
+    }
+
+    #[test]
+    fn scope_model_s30_remote_filename() {
+        assert_eq!(ScopeModel::S30.remote_filename(), "iscope");
     }
 
     #[test]
@@ -1253,7 +1272,17 @@ mod tests {
 
     #[test]
     fn detect_scope_model_s30_product_model() {
+        // Plain "S30" (32-bit ARMv7l) must map to S30, not S30Pro.
         let addr = serve_api_once("Seestar S30", 0);
+        let pem = make_test_pem_key();
+        let model = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
+        assert_eq!(model, ScopeModel::S30);
+    }
+
+    #[test]
+    fn detect_scope_model_s30pro_not_confused_with_s30() {
+        // "S30 Pro" contains "S30" — must match S30Pro, not S30.
+        let addr = serve_api_once("Seestar S30 Pro", 0);
         let pem = make_test_pem_key();
         let model = detect_scope_model_on_port("127.0.0.1", addr.port(), &pem, |_| {}).unwrap();
         assert_eq!(model, ScopeModel::S30Pro);

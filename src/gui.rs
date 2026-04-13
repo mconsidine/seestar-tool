@@ -808,7 +808,8 @@ fn draw_firmware(ui: &mut egui::Ui, fw: &mut FirmwareTab) {
                     auto_btn.on_hover_text("Load an APK file to enable auto-detection");
                 }
                 source_btn(ui, &mut fw.model, ScopeModel::S50, "S50");
-                source_btn(ui, &mut fw.model, ScopeModel::S30Pro, "S30 / S30 Pro");
+                source_btn(ui, &mut fw.model, ScopeModel::S30, "S30");
+                source_btn(ui, &mut fw.model, ScopeModel::S30Pro, "S30 Pro");
             });
 
             ui.add_space(10.0);
