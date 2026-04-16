@@ -128,6 +128,18 @@ pub struct DiagnosticsData {
     pub pi_info: serde_json::Value,
 }
 
+impl DiagnosticsData {
+    /// Redact fields that may contain personally identifiable or sensitive
+    /// information before the data is displayed or saved.
+    pub fn anonymize(&mut self) {
+        for ptr in ["/result/ap/passwd", "/result/location_lon_lat"] {
+            if let Some(v) = self.device_state.pointer_mut(ptr) {
+                *v = serde_json::Value::String("[redacted]".to_string());
+            }
+        }
+    }
+}
+
 // ── iscope validation ─────────────────────────────────────────────────────────
 
 /// Minimum acceptable size for an iscope firmware binary.
@@ -1873,6 +1885,53 @@ mod tests {
             "expected auth error, got: {}",
             err
         );
+    }
+
+    // ── DiagnosticsData::anonymize ────────────────────────────────────────────
+
+    #[test]
+    fn anonymize_redacts_ap_passwd() {
+        let mut data = DiagnosticsData {
+            device_state: serde_json::json!({
+                "result": {"ap": {"ssid": "MyNet", "passwd": "s3cr3t"}}
+            }),
+            pi_info: serde_json::Value::Null,
+        };
+        data.anonymize();
+        assert_eq!(
+            data.device_state["result"]["ap"]["passwd"], "[redacted]",
+            "passwd should be redacted"
+        );
+        assert_eq!(
+            data.device_state["result"]["ap"]["ssid"], "MyNet",
+            "ssid should be unchanged"
+        );
+    }
+
+    #[test]
+    fn anonymize_redacts_location_lon_lat() {
+        let mut data = DiagnosticsData {
+            device_state: serde_json::json!({
+                "result": {"location_lon_lat": [12.345, 67.890]}
+            }),
+            pi_info: serde_json::Value::Null,
+        };
+        data.anonymize();
+        assert_eq!(
+            data.device_state["result"]["location_lon_lat"], "[redacted]",
+            "location_lon_lat should be redacted"
+        );
+    }
+
+    #[test]
+    fn anonymize_is_safe_when_fields_absent() {
+        let mut data = DiagnosticsData {
+            device_state: serde_json::json!({"result": {}}),
+            pi_info: serde_json::Value::Null,
+        };
+        // Should not panic when the targeted fields don't exist.
+        data.anonymize();
+        assert_eq!(data.device_state, serde_json::json!({"result": {}}));
     }
 
     // ── recv_line ─────────────────────────────────────────────────────────────

@@ -402,7 +402,8 @@ pub fn run_diagnostics(
         })
         .await;
         match result {
-            Ok(Ok(data)) => {
+            Ok(Ok(mut data)) => {
+                data.anonymize();
                 let _ = tx.send(TaskMsg::DiagnosticsResult(data));
                 let _ = tx.send(TaskMsg::Done);
             }
