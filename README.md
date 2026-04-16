@@ -11,6 +11,7 @@ Built with [egui](https://github.com/emilk/egui) and Rust. Available as a GUI an
 - **Firmware Update** — install firmware from a local APK/XAPK file, a raw `iscope` binary, or downloaded directly from APKPure
 - **Download Only** — fetch a firmware APK without immediately flashing it
 - **Extract PEM** — extract the TLS private key from a Seestar APK for use with local API access
+- **Diagnostics** — authenticate to the scope and collect raw `get_device_state` and `pi_get_info` API responses, with export to JSON
 - Animated progress bar with installation countdown
 - Color-coded output log
 - Confirmation dialog before any firmware flash
@@ -127,6 +128,18 @@ The app connects to the scope's OTA updater, uploads the firmware, and monitors 
 ### Extract PEM
 
 Pick a Seestar APK/XAPK and click **Extract PEM Key**. The extracted key can be saved to a `.pem` file.
+
+### Diagnostics
+
+The Diagnostics tab connects to a live scope and collects raw API responses without modifying anything.
+
+1. Enter your Seestar's IP address or hostname (default: `seestar.local`)
+2. Pick a Seestar APK/XAPK — the PEM key is extracted automatically in the background (status shown below the file field)
+3. Once the key is ready, click **Run Diagnostics**
+4. The raw JSON responses from `get_device_state` and `pi_get_info` are displayed in scrollable panels
+5. Click **Save to file** (GUI) or **Save JSON to file** (TUI) to export both responses as a single `seestar_diagnostics.json` file
+
+This is useful for inspecting the scope's reported state, battery level, hardware info, and any other fields returned by the API — without touching the firmware.
 
 > **Interoperability Notice:** PEM key extraction is provided for interoperability purposes under 17 U.S.C. § 1201(f) (the DMCA interoperability exemption), enabling independent programs to interoperate with your Seestar device. The legality of key extraction and use varies by jurisdiction. You are solely responsible for ensuring compliance with the laws of your region.
 
