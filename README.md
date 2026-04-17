@@ -103,8 +103,8 @@ Both formats can be used with this tool—it handles the extraction automaticall
 
 `iscope` comes in two variants:
 
-- **`iscope`** — 32-bit firmware binary (used on earlier Seestar models)
-- **`iscope_64`** — 64-bit firmware binary (used on Seestar S30 and S30 Pro)
+- **`iscope`** — 32-bit firmware binary (used on S50, S30)
+- **`iscope_64`** — 64-bit firmware binary (used on S30 Pro)
 
 Both are bzip2-compressed tarballs containing the firmware binary and related system files, stored in the APK's `assets/iscope` or `assets/iscope_64` entry. This tool automatically detects and extracts the correct variant from your APK. You can:
 
